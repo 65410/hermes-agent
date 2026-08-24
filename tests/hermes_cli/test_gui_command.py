@@ -72,6 +72,7 @@ def _ns(**kw):
         setup_tcc_identity=False,
         identity=None,
         close_preview=False,
+        quick_entry=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -293,6 +294,96 @@ def test_gui_brew_install_launches_installed_app_when_present(tmp_path, monkeypa
 
     assert exc.value.code == 0
     assert launched == [1]
+    # The install now runs with a resolved env (managed-Node PATH), never a bare
+    # ``env=None`` that would leave npm's child scripts unable to find ``node``.
+    mock_install.assert_called_once()
+    assert mock_install.call_args.args == ("/usr/bin/npm", root)
+    assert mock_install.call_args.kwargs["capture_output"] is False
+    install_env = mock_install.call_args.kwargs["env"]
+    assert install_env is not None and "PATH" in install_env
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+    assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
+    assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
+    assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+
+
+def test_gui_quick_entry_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
+    """`hermes desktop --quick-entry` must reach the Electron binary as a real
+    argv element so the single-instance handler can summon the floating
+    composer. Without this, the wrapper rejects the unknown flag entirely and
+    wlroots/Wayland users have no compositor-keybind path at all."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe), "--quick-entry"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=pack_ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._register_linux_desktop_entry"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(quick_entry=True))
+
+    assert exc.value.code == 0
+    launch_args = mock_run.call_args_list[1].args[0]
+    assert launch_args == [str(packaged_exe), "--quick-entry"]
+
+
+def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
+    """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
+    shell out to bare ``node``. When Desktop is launched from the updater chain
+    the parent PATH is stripped, so the install env MUST carry the Hermes-managed
+    Node ahead of that bare PATH or the install dies with ``node: not found``.
+    """
+    import os
+
+    from hermes_constants import iter_hermes_node_dirs
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    # A managed Node tree on disk so with_hermes_node_path() actually prepends it.
+    home = tmp_path / "hermes-home"
+    (home / "node" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Simulate the stripped PATH the desktop updater chain hands us.
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    launch_ok = subprocess.CompletedProcess(["hermes"], 0)
+
+    # A plain return_value rather than a fixed side_effect list: this test only
+    # cares about the env handed to the npm install, and pinning an exact
+    # sequence of subprocess.run calls makes it fail (StopIteration) whenever
+    # cmd_gui legitimately shells out one extra time — e.g. the Linux sandbox
+    # fixup, which fires on hosts where chrome-sandbox isn't already
+    # root-owned+4755. Assert on the install env, not on a call count.
+    with patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(skip_build=False))
+
+    managed_dirs = [str(p) for p in iter_hermes_node_dirs() if p.is_dir()]
+    assert managed_dirs, "managed node tree not discovered"
+    install_env = mock_install.call_args.kwargs["env"]
+    path_parts = install_env["PATH"].split(os.pathsep)
+    assert path_parts[: len(managed_dirs)] == managed_dirs
+    assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
+
+
+
 
 
 def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):

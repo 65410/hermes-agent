@@ -473,7 +473,7 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import { createQuickEntryShortcut, hasQuickEntryFlag, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -19301,6 +19301,15 @@ if (!isPrimaryInstance) {
 
     const url = _extractDeepLink(argv)
 
+    // niri/Wayland workaround: wlroots compositors do not implement the
+    // GlobalShortcuts portal, so the OS-level quick-entry shortcut never
+    // fires. Bind it in the compositor instead and route here:
+    // `hermes desktop --quick-entry`.
+    if (hasQuickEntryFlag(argv)) {
+      toggleQuickEntryWindow()
+      return
+    }
+
     if (url) {
       handleDeepLink(url)
     }
@@ -19414,6 +19423,12 @@ app.whenReady().then(() => {
       }
     }
   })
+
+  // niri/Wayland workaround (see 'second-instance' above): a cold start with
+  // the --quick-entry flag opens the floating composer immediately.
+  if (hasQuickEntryFlag(process.argv)) {
+    showQuickEntryWindow()
+  }
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()

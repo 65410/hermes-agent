@@ -4,6 +4,7 @@ import {
   createQuickEntryShortcut,
   DEFAULT_QUICK_ENTRY_SHORTCUT,
   type GlobalShortcutLike,
+  hasQuickEntryFlag,
   parseQuickEntryShortcut,
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
@@ -349,5 +350,15 @@ describe('createQuickEntryShortcut portal probing (#95132)', () => {
     expect(second.error).toBeNull()
     expect(second.registered).toBe(true)
     expect(controller.current()).toEqual(second)
+describe('hasQuickEntryFlag', () => {
+  it('detects the compositor-keybind summon flag', () => {
+    expect(hasQuickEntryFlag(['Hermes', '--quick-entry'])).toBe(true)
+    expect(hasQuickEntryFlag(['Hermes', '--quick-entry', '--source'])).toBe(true)
+  })
+
+  it('ignores other argv and empty argv', () => {
+    expect(hasQuickEntryFlag(['Hermes'])).toBe(false)
+    expect(hasQuickEntryFlag(['--quick'])).toBe(false)
+    expect(hasQuickEntryFlag([])).toBe(false)
   })
 })
