@@ -345,6 +345,20 @@ export const arChrome = {
     windowControls: 'تحكم النافذة',
     paneControls: 'تحكم اللوحات',
     appControls: 'تحكم التطبيق',
+    routeTitles: {
+      chat: 'الدردشة',
+      settings: 'الإعدادات',
+      'command-center': 'مركز الأوامر',
+      skills: 'المهارات',
+      messaging: 'الرسائل',
+      webhooks: 'خطافات الويب',
+      artifacts: 'القطع الأثرية',
+      cron: 'الوظائف المجدولة',
+      profiles: 'الملفات الشخصية',
+      agents: 'الوكلاء',
+      starmap: 'خريطة النجوم',
+      extension: 'الامتداد'
+    },
     modelMenu: {
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',
