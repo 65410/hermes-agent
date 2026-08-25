@@ -813,6 +813,7 @@ export function ContribController() {
     return (
       <ContribWiring>
         <AppContextMenu />
+        <RouteHeading />
         <HudShell />
       </ContribWiring>
     )

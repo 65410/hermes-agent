@@ -3896,9 +3896,10 @@ export interface Translations {
     appControls: string
     routeTitles: {
       chat: string
+      'session-import': string
       settings: string
       'command-center': string
-      skills: string
+      capabilities: string
       messaging: string
       webhooks: string
       artifacts: string
@@ -3906,7 +3907,6 @@ export interface Translations {
       profiles: string
       agents: string
       starmap: string
-      extension: string
     }
     modelMenu: {
       search: string

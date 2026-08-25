@@ -347,17 +347,17 @@ export const arChrome = {
     appControls: 'تحكم التطبيق',
     routeTitles: {
       chat: 'الدردشة',
+      'session-import': 'استيراد جلسة',
       settings: 'الإعدادات',
       'command-center': 'مركز الأوامر',
-      skills: 'المهارات',
+      capabilities: 'القدرات',
       messaging: 'الرسائل',
       webhooks: 'خطافات الويب',
       artifacts: 'القطع الأثرية',
       cron: 'الوظائف المجدولة',
       profiles: 'الملفات الشخصية',
       agents: 'الوكلاء',
-      starmap: 'خريطة النجوم',
-      extension: 'الامتداد'
+      starmap: 'خريطة النجوم'
     },
     modelMenu: {
       search: 'البحث عن نموذج...',
