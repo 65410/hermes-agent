@@ -39070,6 +39070,26 @@
         "title": "WakeStopResult",
         "type": "object"
       },
+      "WorkflowRequestParams": {
+        "additionalProperties": true,
+        "description": "``tools/workflow_tools.py`` field set. ``ops``/``scenario`` are plugin-defined\n(the op vocabulary is owned by the Workflows plugin and read back through\n``action='read'``), so they stay open here.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "action"
+        ],
+        "title": "WorkflowRequestParams",
+        "type": "object"
+      },
       "_SessionScoped": {
         "additionalProperties": false,
         "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
@@ -39345,6 +39365,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/EmptyRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "workflow",
+      "summary": "Read or edit the workflow graph on the Workflows canvas (JSON text answer).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkflowRequestParams"
           }
         }
       ],
