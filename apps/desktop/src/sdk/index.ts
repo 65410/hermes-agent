@@ -1698,6 +1698,15 @@ export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/
  *  secondary controls, a solid circle for the one primary action. Wear these on
  *  any control that rides the composer so a plugin's row reads as the same row. */
 export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
+/** A REAL Hermes chat, for a session the plugin owns — the same thread, tool
+ *  cards, streaming indicators, attachments and composer the workspace pane
+ *  renders, not a lookalike. The plugin creates or resumes the session and
+ *  passes the ids; layout is the plugin's, styled from its own container the
+ *  way HUD mode restyles the same tree. */
+export {
+  DetachedSessionChat as SessionChat,
+  type DetachedSessionChatProps as SessionChatProps
+} from '@/app/chat/detached-chat'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 /** Page-owned header control (the kanban board switcher): projected into the
  *  workspace page header when the page renders in the workspace pane, and
