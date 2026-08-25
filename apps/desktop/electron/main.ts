@@ -19301,6 +19301,13 @@ if (!isPrimaryInstance) {
 
     const url = _extractDeepLink(argv)
 
+    // Deep link first: an argv that carries both a URL and the quick-entry flag
+    // must not drop the link. (Practically unreachable — the compositor command
+    // is fixed — but ordering by precedence here costs nothing.)
+    if (url) {
+      handleDeepLink(url)
+    }
+
     // niri/Wayland workaround: wlroots compositors do not implement the
     // GlobalShortcuts portal, so the OS-level quick-entry shortcut never
     // fires. Bind it in the compositor instead and route here:
@@ -19308,10 +19315,6 @@ if (!isPrimaryInstance) {
     if (hasQuickEntryFlag(argv)) {
       toggleQuickEntryWindow()
       return
-    }
-
-    if (url) {
-      handleDeepLink(url)
     }
 
     ensureMainWindow(mainWindow, {
@@ -19425,7 +19428,9 @@ app.whenReady().then(() => {
   })
 
   // niri/Wayland workaround (see 'second-instance' above): a cold start with
-  // the --quick-entry flag opens the floating composer immediately.
+  // the --quick-entry flag opens the floating composer immediately. This is
+  // show, not toggle, on purpose — there is no prior window to toggle away on
+  // a fresh launch; don't "unify" the two call sites.
   if (hasQuickEntryFlag(process.argv)) {
     showQuickEntryWindow()
   }

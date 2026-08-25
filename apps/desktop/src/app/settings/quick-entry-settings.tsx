@@ -100,7 +100,12 @@ export function QuickEntrySettings() {
             </div>
           )
         }
-        description={q.shortcutDesc}
+        description={
+          <>
+            {q.shortcutDesc}
+            {q.compositorHint && <span className='block break-words'>{q.compositorHint}</span>}
+          </>
+        }
         id={settingElementId(SETTING_IDS.advanced.quickEntryShortcut)}
         title={q.shortcutTitle}
       />
