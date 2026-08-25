@@ -1694,6 +1694,10 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
  *  it, so a connection looks the same wherever it is named. */
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
+/** The composer control row's button vocabulary — a ghost icon for the
+ *  secondary controls, a solid circle for the one primary action. Wear these on
+ *  any control that rides the composer so a plugin's row reads as the same row. */
+export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 /** Page-owned header control (the kanban board switcher): projected into the
  *  workspace page header when the page renders in the workspace pane, and
@@ -1780,6 +1784,17 @@ export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
+/** The composer's own chrome, so a plugin surface that carries an input can
+ *  wear the real one instead of approximating it. `composerDockCard('top')` is
+ *  the card that fuses above the composer (the status stack uses it). */
+export {
+  composerDockCard,
+  composerFill,
+  composerFloatingPill,
+  composerFloatingStrip,
+  composerPanelCard,
+  composerSurfaceGlass
+} from '@/components/chat/composer-dock'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above
  *  it — it takes no width from any zone, has no tab, and can't be docked.
@@ -1810,6 +1825,9 @@ export {
   ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+/** The form-control chrome Input/Textarea/SelectTrigger share — for the
+ *  composite controls (steppers, tag fields) the kit doesn't ship. */
+export { type ControlVariantProps, controlVariants } from '@/components/ui/control'
 export { CopyButton } from '@/components/ui/copy-button'
 export { DecodeText } from '@/components/ui/decode-text'
 export {
@@ -1835,7 +1853,7 @@ export {
 export { EmptyState } from '@/components/ui/empty-state'
 export { ErrorState } from '@/components/ui/error-state'
 export { FadeScroll } from '@/components/ui/fade-scroll'
-export { GlyphSpinner } from '@/components/ui/glyph-spinner'
+export { GlyphSpinner, type SpinnerName } from '@/components/ui/glyph-spinner'
 export { Input } from '@/components/ui/input'
 export { Kbd, KbdGroup } from '@/components/ui/kbd'
 /** The app's canonical loader (animated curves; `lemniscate-bloom` for long
@@ -1854,7 +1872,15 @@ export { SandboxedFrame, type SandboxedFrameProps } from '@/components/ui/sandbo
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'
-export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 export { Separator } from '@/components/ui/separator'
 export { Skeleton } from '@/components/ui/skeleton'
 export { Switch } from '@/components/ui/switch'
