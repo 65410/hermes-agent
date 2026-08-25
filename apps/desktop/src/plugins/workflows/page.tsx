@@ -8,7 +8,6 @@ import {
   EmptyState,
   PageHeader,
   PageHeaderActions,
-  PageHeaderCount,
   PageHeaderTitle,
   PageShell,
   SidePanel,
@@ -35,9 +34,9 @@ import {
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type AddAt, addStep, AddStepProvider, KindPicker } from './add-step'
-import { runTurn } from './agent'
 import { AskDialog } from './ask'
-import { type AgentReply, Composer } from './composer'
+import { lendCanvas, runOps } from './bridge'
+import { CanvasChat } from './chat'
 import { FlowDirProvider } from './direction'
 import { $currentId, $workflows, createWorkflow, saveWorkflow, type WorkflowDoc } from './documents'
 import { CutEdgeProvider, edgeTypes } from './edges'
@@ -53,10 +52,11 @@ import {
   toScenario,
   updateStep
 } from './graph'
+import type { RunControl } from './graph-tools'
 import { Inspector } from './inspector'
 import { DEFAULT_DIR, type FlowDir, tidyLayout } from './layout'
 import { LiveLog } from './livelog'
-import { type NodeData, nodeTypes } from './nodes'
+import { CANVAS_NOTE_ID, canvasNote, type NodeData, nodeTypes } from './nodes'
 import { usePlayer } from './player'
 import { type EdgeState, feedLine, type FeedLine, freshRuntime, type StepRuntime } from './protocol'
 import { blankScenario, starterScenario, type StepConfig, type StepKind } from './scenario'
@@ -73,6 +73,26 @@ const IDLE_RT: StepRuntime = freshRuntime()
 const INSPECTOR_REM = '17.5rem'
 const INSPECTOR_WIDTH = 'w-[17.5rem]'
 
+/** A step appeared or disappeared — not a title edit, not a wire. Those are
+ *  the moments the ranks have to be redone, or the new card sits wherever
+ *  freeSpot parked it and a hole stays where the old one was. */
+function sameSteps(a: Graph, b: Graph): boolean {
+  const was = stepNodes(a)
+  const now = stepNodes(b)
+
+  if (was.length !== now.length) {
+    return false
+  }
+
+  const ids = new Set(was.map(n => n.id))
+
+  return now.every(n => ids.has(n.id))
+}
+
+function laidOut(from: Graph, to: Graph, dir: FlowDir): Graph {
+  return sameSteps(from, to) ? to : { edges: to.edges, nodes: tidyLayout(to.nodes, to.edges, dir) }
+}
+
 // Keep the graph clear of the floating chrome that is ALWAYS there: the brand
 // mark up top, the timeline + composer along the bottom, the live log's lane on
 // the right. The inspector is deliberately NOT reserved for — it floats over
@@ -83,6 +103,13 @@ const FIT = {
   // left the top rank grazing it.
   padding: { top: '78px', right: '150px', bottom: '208px', left: '40px' }
 } as const
+
+// Pace of an agent build (see `paint`). The gap is per op — slow enough to
+// read as one thing happening after another, fast enough that a three-step
+// edit isn't a cutscene. The budget caps the whole batch, so a long build
+// accelerates rather than making you sit through it.
+const PAINT_GAP_MS = 130
+const PAINT_BUDGET_MS = 2200
 
 export default function WorkflowsPage() {
   const docs = useValue($workflows)
@@ -104,6 +131,15 @@ export default function WorkflowsPage() {
   )
 }
 
+function NewWorkflowButton() {
+  return (
+    <Button onClick={() => createWorkflow('Untitled workflow', blankScenario())} size="sm">
+      <Codicon name="add" size="0.8rem" />
+      New workflow
+    </Button>
+  )
+}
+
 /** Nothing authored yet. Two ways in: an empty canvas, or the scenario the
  *  plugin ships with — which is the faster way to learn what a gate is. */
 function FirstWorkflow() {
@@ -111,8 +147,12 @@ function FirstWorkflow() {
     <PageShell className="wf-root">
       <PageHeader>
         <PageHeaderTitle>Workflows</PageHeaderTitle>
+        <PageHeaderActions>
+          <NewWorkflowButton />
+        </PageHeaderActions>
       </PageHeader>
       <EmptyState
+        className="min-h-0 flex-1"
         action={
           <div className="flex items-center gap-2">
             <Button onClick={() => createWorkflow('Untitled workflow', blankScenario())} size="sm">
@@ -169,16 +209,27 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // document is fixed for this canvas's life (the page keys on its id), so
   // there's nothing for the memo to depend on.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const seed = useMemo(() => fromScenario(doc.scenario), [])
+  const seed = useMemo(() => {
+    const g = fromScenario(doc.scenario)
+
+    return g.nodes.length === 0 ? { ...g, nodes: [canvasNote()] } : g
+  }, [])
   const [nodes, setNodes, onNodesChange] = useNodesState(seed.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(seed.edges)
   const [selected, setSelected] = useState<string | null>(null)
   const [draft, setDraft] = useState<AddAt | null>(null)
+
+  // The note is scenery for an empty canvas. A real step means it's done.
+  useEffect(() => {
+    if (nodes.some(n => n.id !== CANVAS_NOTE_ID) && nodes.some(n => n.id === CANVAS_NOTE_ID)) {
+      setNodes(ns => ns.filter(n => n.id !== CANVAS_NOTE_ID))
+    }
+  }, [nodes, setNodes])
   // The + lives on the edge; adding a step unmounts that edge under the
   // pointer, so the mouseup lands on the pane and would clear the selection
   // we just made. Swallow the next pane click after an add.
   const ignorePaneClick = useRef(false)
-  const { fitView, screenToFlowPosition } = useReactFlow()
+  const { fitView } = useReactFlow()
 
   // Undo/redo are keyboard-only (⌘Z / ⌘⇧Z, bound inside the hook) — the canvas
   // takes the snapshots, the rail doesn't need buttons for them.
@@ -225,6 +276,15 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // follow it (see nodes.tsx), so nothing here computes a position by hand.
   const [dir, setDirState] = useState<FlowDir>(DEFAULT_DIR)
   const vertical = dir === 'TB'
+  // Read by the tool bridge, which is registered once and would otherwise
+  // close over the direction the canvas had when the page mounted.
+  const dirRef = useRef(dir)
+  dirRef.current = dir
+
+  // In-flight timers for an agent build (see `paint`), and the flag that lets
+  // cards glide to their new ranks while one is playing.
+  const brush = useRef<number[]>([])
+  const [reflowing, setReflowing] = useState(false)
 
   const tidy = useCallback(
     (to: FlowDir = dir) => {
@@ -255,9 +315,10 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // signature changes the moment real dimensions land, which is precisely the
   // instant a correct layout is possible.
   //
-  // After that, positions belong to the user. Adding, splicing, and deleting
-  // all place or nudge locally (see add-step.tsx / removeNode) — the only
-  // global re-layout left is the explicit Tidy button.
+  // After that, dragging a card keeps its place. Adding or removing a step
+  // re-tidies the ranks (see `laidOut`) without touching the camera — the
+  // viewport is yours. The Tidy button is still there for a full rearrange
+  // plus a fit.
   const didAutoTidy = useRef(false)
   const measuredSig = nodes.map(n => `${n.id}:${n.measured?.width ?? 0}x${n.measured?.height ?? 0}`).join()
   const allMeasured = nodes.length > 0 && nodes.every(n => n.measured?.width && n.measured?.height)
@@ -269,11 +330,24 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
     }
 
     didAutoTidy.current = true
+
+    if (!nodes.some(n => n.id !== CANVAS_NOTE_ID)) {
+      // The note lives at the origin, which is the pane's top-left — narnia.
+      // fitView with maxZoom 1 pans it into the padded centre (above the
+      // composer, clear of the log) without blowing the label up to a title.
+      // Two frames: commit, then measure — same reason `refit` waits.
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(() => void fitView({ ...FIT, duration: 0, maxZoom: 1 }))
+      )
+
+      return
+    }
+
     setNodes(ns => tidyLayout(ns, edges, dir))
     refit()
     // measuredSig is the real dependency — it changes when a card's measured
     // size lands. eslint can't see that it stands in for `nodes`.
-  }, [allMeasured, measuredSig, dir, edges, refit, setNodes])
+  }, [allMeasured, measuredSig, dir, edges, fitView, refit, setNodes])
 
   // sync run state -> node.data (preserves dragged positions + edited config).
   //
@@ -355,7 +429,8 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
       }
 
       takeSnapshot()
-      setNodes(next.nodes)
+      const placed = tidyLayout(next.nodes, next.edges, dir)
+      setNodes(placed)
       setEdges(next.edges)
       ignorePaneClick.current = true
       setSelected(next.id)
@@ -367,11 +442,10 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   )
 
   // ONE commit path for every structural edit — the connect gesture, a delete,
-  // the inspector, and every tool the composer's agent calls. Undo, selection
-  // and the transcript all hang off this, so nothing can mutate the document
-  // and leave one of the three behind.
+  // the inspector, and every tool the composer's agent calls. Undo and the
+  // transcript hang off this, so nothing can mutate the document and leave
+  // one of them behind. The inspector stays where the user put it.
   const graph = useMemo<Graph>(() => ({ nodes, edges }), [nodes, edges])
-  const stepCount = stepNodes(graph).length
   graphRef.current = graph
 
   // The document IS the canvas, so it's written back whenever the canvas
@@ -389,16 +463,69 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
       }
 
       takeSnapshot()
-      setNodes(op.graph.nodes)
-      setEdges(op.graph.edges)
+      const next = laidOut(graph, op.graph, dir)
+      setNodes(next.nodes)
+      setEdges(next.edges)
 
-      if (op.focus) {
-        setSelected(op.focus)
+      return { ...op, graph: next }
+    },
+    [dir, graph, setEdges, setNodes, takeSnapshot]
+  )
+
+  // A batch of agent ops arrives as a BUILD, not a jump cut. Landing six steps
+  // and five wires in one frame reads as a page refresh — you can't tell what
+  // Hermes did, only that the canvas is different now. Played out, you watch
+  // it think: a step appears, a wire finds it, the graph makes room.
+  //
+  // The whole batch is still ONE undo. Stepping backwards through an agent's
+  // reasoning one node at a time is not undo, it's archaeology.
+  const paint = useCallback(
+    (frames: Graph[]) => {
+      if (!frames.length) {
+        return
       }
 
-      return op
+      // A second batch mid-build cancels the first. Its last frame already
+      // folded into the graph this one was computed from, so the pending
+      // frames are stale — and two timers writing nodes is a flicker.
+      brush.current.forEach(window.clearTimeout)
+      brush.current = []
+      takeSnapshot()
+
+      // Long batches speed up rather than outstay their welcome. Nobody wants
+      // a forty-op build to take six seconds.
+      const gap = Math.min(PAINT_GAP_MS, PAINT_BUDGET_MS / frames.length)
+
+      setReflowing(true)
+
+      frames.forEach((frame, i) => {
+        const last = i === frames.length - 1
+
+        brush.current.push(
+          window.setTimeout(
+            () => {
+              setNodes(frame.nodes)
+              setEdges(frame.edges)
+
+              if (last) {
+                setReflowing(false)
+              }
+            },
+            gap * (i + 1)
+          )
+        )
+      })
     },
     [setEdges, setNodes, takeSnapshot]
+  )
+
+  // Unmount cleanup only: a build timer that fires into an unmounted canvas
+  // writes state that no longer has anywhere to go.
+  useEffect(
+    () => () => {
+      brush.current.forEach(window.clearTimeout)
+    },
+    []
   )
 
   // Drawing a wire. The gesture had no handler at all before, which meant a
@@ -561,43 +688,60 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
 
   const removeNode = useCallback((id: string) => applyOp(removeStep(graph, id)), [applyOp, graph])
 
-  // The composer's agent. `runTurn` plans TOOL CALLS against the graph's own
-  // schema and `callTool` runs them through the same primitives the inspector
-  // and the canvas use — so an agent edit and a hand edit are one operation.
-  // The transcript reports whatever the tools reported.
-  const handleAgentTurn = useCallback(
-    async (text: string): Promise<AgentReply> => {
-      const turn = await runTurn(text, graph, {
-        running: player.running,
-        paused: player.pauseState === 'paused',
-        start: player.start,
-        pause: player.requestPause,
-        resume: player.resume,
-        reset: player.reset
-      })
-
-      if (turn.graph !== graph) {
-        applyOp({ ok: true, graph: turn.graph, message: '', focus: turn.focus })
-      }
-
-      return { reply: turn.reply, edit: turn.edit }
-    },
-    [applyOp, graph, player]
+  // What `run_control` drives. Held in a ref for the bridge below, for the
+  // same reason the graph is: the bridge registers once per canvas, and a
+  // control that changed identity every frame would re-register through every
+  // drag.
+  const run = useMemo<RunControl>(
+    () => ({
+      running: player.running,
+      paused: player.pauseState === 'paused',
+      start: player.start,
+      pause: player.requestPause,
+      resume: player.resume,
+      reset: player.reset
+    }),
+    [player]
   )
 
-  // Add a step where you point. The canvas route is ComfyUI's gesture —
-  // double-click empty canvas — not a Space-armed placement mode: a mode you
-  // can be in is a mode you can be stuck in, and Space is already the
-  // transport key.
-  const placeAt = useCallback(
-    (e: { clientX: number; clientY: number }) => {
-      requestAdd({
-        on: 'canvas',
-        at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
-      })
-    },
-    [requestAdd, screenToFlowPosition]
+  const runRef = useRef(run)
+  runRef.current = run
+
+  // Hermes edits the canvas through here. While it's on screen the `workflow`
+  // tool applies ops to the LIVE graph rather than the stored copy behind it,
+  // so a chat turn paints the same way a hand edit does. Off screen the
+  // bridge falls back to the document; you see it when you come back.
+  useEffect(
+    () =>
+      lendCanvas({
+        id: doc.id,
+        apply: ops => {
+          const from = graphRef.current
+          const out = runOps(from, runRef.current, ops, dirRef.current)
+
+          if (out.graph === from) {
+            return out
+          }
+
+          // Add/remove re-tidies the ranks as the build plays. The camera
+          // stays put — this is not a fitView.
+          const frames = out.results.filter(r => r.ok).map(r => laidOut(from, r.graph, dirRef.current))
+
+          paint(frames)
+
+          return { graph: frames.at(-1) ?? out.graph, results: out.results }
+        }
+      }),
+    [doc.id, paint]
   )
+
+  const resetView = useCallback(() => {
+    const empty = !nodes.some(n => n.id !== CANVAS_NOTE_ID)
+
+    window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => void fitView({ ...FIT, duration: 400, maxZoom: empty ? 1 : undefined }))
+    )
+  }, [fitView, nodes])
 
   const transport = useCallback(() => {
     // Parked on a person. Nothing the transport can do will move the run —
@@ -652,7 +796,10 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [tidy, transport])
 
-  const selNode = useMemo(() => (selected ? nodes.find(n => n.id === selected) : null), [nodes, selected])
+  const selNode = useMemo(
+    () => (selected ? nodes.find(n => n.id === selected && (n.data as NodeData).def) : null),
+    [nodes, selected]
+  )
 
   // The live log names steps the way their cards do, renames included.
   const nodeTitles = useMemo(() => {
@@ -681,7 +828,6 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
       <PageHeader>
         <PageHeaderTitle>Workflows</PageHeaderTitle>
         <WorkflowSwitcher />
-        <PageHeaderCount>{stepCount}</PageHeaderCount>
         <PageHeaderActions>
           {/* A divided box, not an arrow: the icon has to say "arrangement",
               and a lone chevron on a header button says "this opens something".
@@ -706,18 +852,19 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
               />
             </Button>
           </Tip>
+          <NewWorkflowButton />
         </PageHeaderActions>
       </PageHeader>
 
       <div
-        className="canvas-wrap"
-        /* ComfyUI's add gesture: double-click on EMPTY canvas opens the kind
-           picker under the cursor. Caught here because React Flow exposes no
-           pane double-click prop — the target check keeps double-clicks on
-           cards, wires and panels meaning whatever those things say they mean. */
+        className={cn('canvas-wrap', reflowing && 'reflowing')}
+        /* Double-click empty canvas frames the graph. Caught here because
+           React Flow exposes no pane double-click prop — the target check
+           keeps double-clicks on cards, wires and panels meaning whatever
+           those things say they mean. */
         onDoubleClick={e => {
           if ((e.target as HTMLElement).classList.contains('react-flow__pane')) {
-            placeAt(e)
+            resetView()
           }
         }}
       >
@@ -735,7 +882,7 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
                 edges={edges}
                 edgeTypes={edgeTypes}
                 elevateNodesOnSelect
-                fitView
+                fitView={nodes.some(n => n.id !== CANVAS_NOTE_ID)}
                 fitViewOptions={FIT}
                 isValidConnection={isValidConnection}
                 maxZoom={1.75}
@@ -773,7 +920,11 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
                 onConnectEnd={onConnectEnd}
                 onConnectStart={onConnectStart}
                 onEdgesChange={handleEdgesChange}
-                onNodeClick={(_, n) => setSelected(n.id)}
+                onNodeClick={(_, n) => {
+                  if (n.id !== CANVAS_NOTE_ID) {
+                    setSelected(n.id)
+                  }
+                }}
                 onNodeDragStart={() => takeSnapshot()}
                 onNodesChange={handleNodesChange}
                 onPaneClick={() => {
@@ -804,9 +955,8 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
                 reconnectRadius={22}
                 selectionKeyCode="Shift"
                 zoomActivationKeyCode={['Meta', 'Control']}
-                /* Double-click on empty canvas adds a step there — see the wrapper's
-           onDoubleClick; React Flow has no pane double-click prop. Its default
-           spend of the gesture (zoom) is turned off to make room. */
+                /* The wrapper's onDoubleClick frames the graph. RF's default
+           spend of the gesture (zoom in) is turned off to make room. */
                 zoomOnDoubleClick={false}
               >
                 <Background gap={20} size={1.3} variant={BackgroundVariant.Dots} />
@@ -825,11 +975,14 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
                     </button>
                   )}
                   <div
-                    className={cn(composerDockCard('top'), 'mx-2 overflow-hidden rounded-b-none border-b-transparent')}
+                    className={cn(
+                      composerDockCard('top'),
+                      'canvas-dock-transport mx-2 overflow-hidden rounded-b-none border-b-transparent'
+                    )}
                   >
                     <Timeline p={player} />
                   </div>
-                  <Composer onSend={handleAgentTurn} phase={live ? phase : 'running'} />
+                  <CanvasChat autofocus={!nodes.some(n => n.id !== CANVAS_NOTE_ID)} workflowId={doc.id} />
                 </Panel>
 
                 {player.asking && (

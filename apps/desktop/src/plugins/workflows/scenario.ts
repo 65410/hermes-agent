@@ -551,10 +551,9 @@ export const starterScenario = (): Scenario => ({
   edges: EDGE_DEFS
 })
 
-/** One step, because `setScenario` refuses a scenario with none and a truly
- *  empty canvas gives the author nothing to click. */
+/** Nothing on the canvas. The composer is the way in. */
 export const blankScenario = (): Scenario => ({
   version: 1,
-  steps: [{ id: 'start', kind: 'agent', config: defaultConfig({ id: 'start', kind: 'agent', title: 'First step' }) }],
+  steps: [],
   edges: []
 })

@@ -14,10 +14,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { FeedLine } from './protocol'
 
 const LIFETIME_MS = 3400
-// Three at a time. This is a glance-level "what's happening right now", not a
-// feed — a tall column of them turns into a second event log, which is exactly
-// what the log button is for.
-const MAX_VISIBLE = 3
+// Six at a time — a glance of the last few beats, not a second event log.
+const MAX_VISIBLE = 6
 
 interface Emote {
   key: number
@@ -68,10 +66,7 @@ export function LiveLog({
       return
     }
 
-    if (lines.length === seen.current) {
-      return
-    }
-
+    if (lines.length === seen.current) {return}
     const now = Date.now()
     const fresh = lines.slice(seen.current).map((line, i) => ({ key: seen.current + i, line, at: now }))
     seen.current = lines.length
@@ -79,18 +74,13 @@ export function LiveLog({
   }, [lines])
 
   useEffect(() => {
-    if (emotes.length === 0) {
-      return
-    }
-
+    if (emotes.length === 0) {return}
     const id = setInterval(() => setEmotes(prev => prev.filter(e => Date.now() - e.at < LIFETIME_MS)), 250)
 
     return () => clearInterval(id)
   }, [emotes.length])
 
-  if (hidden || emotes.length === 0) {
-    return null
-  }
+  if (hidden || emotes.length === 0) {return null}
 
   return (
     <div className="emotes">

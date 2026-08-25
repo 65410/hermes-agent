@@ -21,6 +21,9 @@ export interface WorkflowDoc {
   id: string
   name: string
   scenario: Scenario
+  /** The canvas chat for THIS workflow. Switching workflows without this
+   *  would keep talking to the previous graph. */
+  sessionId?: string
 }
 
 /** Every workflow, oldest first — the order the switcher lists them in. */
@@ -83,6 +86,11 @@ export function removeWorkflow(id: string): void {
  *  and storage never show a stale copy of the thing you're looking at. */
 export function saveWorkflow(id: string, scenario: Scenario): void {
   $workflows.set($workflows.get().map(d => (d.id === id ? { ...d, scenario } : d)))
+}
+
+/** Remember the conversation that belongs to this workflow. */
+export function bindWorkflowSession(id: string, sessionId: string): void {
+  $workflows.set($workflows.get().map(d => (d.id === id ? { ...d, sessionId } : d)))
 }
 
 export interface DocStorage {

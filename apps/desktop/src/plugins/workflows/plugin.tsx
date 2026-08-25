@@ -9,6 +9,12 @@
  * agent edit and a hand edit are the same operation. `run.fake.ts` walks the
  * live graph to produce a run; nothing about the playback is scripted.
  *
+ * That op vocabulary is what makes the page drivable. `bridge.ts` serves the
+ * `workflow` tool over it, so Hermes can read and edit the user's workflows
+ * from any chat — and the canvas composer is Hermes too, a full agent turn
+ * with every tool it normally has. You build by hand, or by asking, or both in
+ * the same minute, against one document.
+ *
  * Ships OFF by default (`defaultEnabled: false`): it inventories in
  * Settings ▸ Plugins and registers nothing until the user flips the switch.
  */
@@ -26,8 +32,10 @@ import {
   type SidebarNavContribution
 } from '@hermes/plugin-sdk'
 
+import { bindBridge } from './bridge'
 import { bindDocuments } from './documents'
 import WorkflowsPage from './page'
+import { bindCanvasSession } from './session'
 
 const PATH = '/workflows'
 
@@ -38,6 +46,13 @@ const plugin: HermesPlugin = {
   defaultEnabled: false,
   register(ctx) {
     ctx.onDispose(bindDocuments(ctx.storage))
+    // The canvas conversation outlives any one visit to the page, so its id is
+    // remembered here rather than minted on mount.
+    bindCanvasSession(ctx.storage)
+    // Bound at register, not at mount: the `workflow` tool addresses the
+    // user's workflows, not their current page, so Hermes can read and edit
+    // them from any chat without the canvas being on screen.
+    ctx.onDispose(bindBridge())
 
     ctx.registerMany([
       {

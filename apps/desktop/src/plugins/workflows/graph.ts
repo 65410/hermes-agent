@@ -13,7 +13,7 @@
 
 import type { Edge, Node, XYPosition } from '@xyflow/react'
 
-import { freeRow, freeSpot, RANK_GAP, tidyLayout, widthOf } from './layout'
+import { DEFAULT_DIR, type FlowDir, freeRow, freeSpot, heightOf, RANK_GAP, tidyLayout, widthOf } from './layout'
 import type { NodeData } from './nodes'
 import { freshRuntime } from './protocol'
 import type { RunPlan } from './run.fake'
@@ -117,6 +117,9 @@ export interface AddStepInput {
   before?: string
   position?: XYPosition
   config?: Partial<StepConfig>
+  /** Which way the ranks run, for placing a wired step one rank along. The
+   *  canvas passes its current direction; a headless edit takes the default. */
+  dir?: FlowDir
 }
 
 export function addStep(g: Graph, input: AddStepInput): OpResult {
@@ -198,14 +201,22 @@ export function addStep(g: Graph, input: AddStepInput): OpResult {
     }
   }
 
+  // A tool never sends a position, so the rank step has to follow the flow.
+  // It used to be hardcoded along x, which read correctly only while the
+  // canvas was horizontal — once vertical became the default, every step an
+  // agent wired on marched SIDEWAYS while its wire ran downward, and a graph
+  // built from scratch came out as a row of cards stitched together by
+  // zigzags.
+  const dir = input.dir ?? DEFAULT_DIR
+
+  /** One rank along from `from`, in the direction the flow runs. */
+  const nextRank = (from: Node) =>
+    dir === 'TB'
+      ? { x: from.position.x, y: from.position.y + lead * (heightOf(from) + RANK_GAP) }
+      : { x: from.position.x + lead * (widthOf(from) + RANK_GAP), y: from.position.y }
+
   const position =
-    input.position ??
-    (anchor
-      ? freeRow(g.nodes, {
-          x: anchor.position.x + lead * (widthOf(anchor) + RANK_GAP),
-          y: anchor.position.y
-        })
-      : freeSpot(g.nodes, { x: 0, y: 0 }))
+    input.position ?? (anchor ? freeRow(g.nodes, nextRank(anchor), dir) : freeSpot(g.nodes, { x: 0, y: 0 }, dir))
 
   const node: Node = {
     id,
@@ -1083,7 +1094,7 @@ export function fromScenario(s: Scenario): Graph {
     }
   })
 
-  const edges: Edge[] = s.edges.map(e => {
+  const edges: Edge[] = (s.edges ?? []).map(e => {
     const id = e.id || edgeIdFor(e.source, e.target)
     const sourceHandle = wires.handles.get(id) ?? e.sourceHandle
 
@@ -1107,14 +1118,10 @@ export function fromScenario(s: Scenario): Graph {
  *  agent that wants to author a workflow outright shouldn't have to express it
  *  as thirty surgical edits. */
 export function setScenario(g: Graph, s: Scenario): OpResult {
-  if (!s?.steps?.length) {
-    return fail(g, 'A scenario needs at least one step.')
-  }
-
   return {
     ok: true,
-    graph: fromScenario({ ...s, version: 1 }),
-    message: `Replaced the scenario — ${s.steps.length} steps, ${s.edges?.length ?? 0} wires.`,
-    edit: `scenario · ${s.steps.length} steps`
+    graph: fromScenario({ ...s, version: 1, steps: s?.steps ?? [], edges: s?.edges ?? [] }),
+    message: `Replaced the scenario — ${s?.steps?.length ?? 0} steps, ${s?.edges?.length ?? 0} wires.`,
+    edit: `scenario · ${s?.steps?.length ?? 0} steps`
   }
 }

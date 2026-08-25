@@ -83,13 +83,7 @@ export function SidePanel({ children, className, onClose, side = 'right', ...pro
  * lets it wrap to two lines without squeezing the buttons.
  */
 export function SidePanelHeader({ className, ...props }: ComponentProps<'header'>) {
-  return (
-    <header
-      className={cn('flex flex-col gap-2 px-4 pt-3.5 pb-3', className)}
-      data-slot="side-panel-header"
-      {...props}
-    />
-  )
+  return <header className={cn('flex flex-col gap-2 px-4 pt-3.5 pb-3', className)} data-slot="side-panel-header" {...props} />
 }
 
 /** What the panel is about, on the header's second row. */
@@ -110,7 +104,11 @@ export function SidePanelToolbar({ className, ...props }: ComponentProps<'div'>)
 
 /** The scrolling remainder. Takes the leftover height and nothing more, so a
  *  long body scrolls inside the panel rather than pushing the header off. */
-export function SidePanelBody({ className, fade = false, ...props }: { fade?: boolean } & ComponentProps<'div'>) {
+export function SidePanelBody({
+  className,
+  fade = false,
+  ...props
+}: { fade?: boolean } & ComponentProps<'div'>) {
   const ref = useRef<HTMLDivElement>(null)
   const [edges, setEdges] = useState({ above: false, below: false })
 
@@ -141,7 +139,8 @@ export function SidePanelBody({ className, fade = false, ...props }: { fade?: bo
 /** The one label style a detail surface uses for a field or a section — small,
  *  loud tracking, quaternary. Exported as a class because it lands on plain
  *  spans and legends as often as it does on a Section. */
-export const SIDE_PANEL_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
+export const SIDE_PANEL_LABEL =
+  'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
 
 /** A labelled group inside the body. `action` rides the label's right edge —
  *  an "add" or "clear" that belongs to this group and nothing else. */

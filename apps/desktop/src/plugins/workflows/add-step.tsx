@@ -1,7 +1,8 @@
+import { Codicon, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@hermes/plugin-sdk'
 import { type Edge, type Node, useStore, type XYPosition } from '@xyflow/react'
-import { createContext, useContext, useEffect } from 'react'
+import { createContext, useContext } from 'react'
 
-import { KindMark } from './kind-mark'
+import { KIND_ICON } from './kind-mark'
 import { CARD_W, DEFAULT_DIR, type FlowDir, freeSpot, RANK_GAP, widthOf } from './layout'
 import { type NodeData } from './nodes'
 import { type EdgeState, freshRuntime } from './protocol'
@@ -163,7 +164,7 @@ const Ctx = createContext<RequestAdd>(() => {})
 export const AddStepProvider = Ctx.Provider
 export const useAddStep = () => useContext(Ctx)
 
-/** n8n's node creator, four rows — the kinds the seed already uses. */
+/** The app's menu, parked on the + / drop point. */
 export function KindPicker({
   at,
   onPick,
@@ -173,49 +174,35 @@ export function KindPicker({
   onPick: (kind: StepKind) => void
   onClose: () => void
 }) {
-  // Subscribe to the live viewport so the menu stays on the + / drop point
-  // through pan and zoom. A captured clientX/Y is a screenshot of one frame.
   const [tx, ty, zoom] = useStore(s => s.transform)
   const pane = useStore(s => s.domNode)
   const origin = pane?.getBoundingClientRect()
-
-  const screen = {
-    x: at.x * zoom + tx + (origin?.left ?? 0),
-    y: at.y * zoom + ty + (origin?.top ?? 0)
-  }
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
-      }
-    }
-
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  const pad = 12
-  const left = Math.min(screen.x, window.innerWidth - 220 - pad)
-  const top = Math.min(screen.y, window.innerHeight - 220 - pad)
+  const left = at.x * zoom + tx + (origin?.left ?? 0)
+  const top = at.y * zoom + ty + (origin?.top ?? 0)
 
   return (
-    <div
-      className="kind-pick pop"
-      onPointerDown={e => e.stopPropagation()}
-      style={{ left: Math.max(pad, left), top: Math.max(pad, top) }}
-    >
-      {STEP_KINDS.map(k => (
-        <button className="kind-pick-row" key={k.kind} onClick={() => onPick(k.kind)} type="button">
-          <KindMark kind={k.kind} />
-          <span className="kind-pick-text">
-            <span className="kind-pick-name">{k.title}</span>
-            <span className="kind-pick-blurb">{k.blurb}</span>
-          </span>
-        </button>
-      ))}
-    </div>
+    <DropdownMenu onOpenChange={open => !open && onClose()} open>
+      <DropdownMenuTrigger asChild>
+        <span
+          aria-hidden
+          className="pointer-events-none fixed z-50 size-px"
+          style={{ left, top }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="min-w-44"
+        onCloseAutoFocus={e => e.preventDefault()}
+        side="bottom"
+      >
+        {STEP_KINDS.map(k => (
+          <DropdownMenuItem key={k.kind} onSelect={() => onPick(k.kind)}>
+            <Codicon name={KIND_ICON[k.kind]} size="0.8rem" />
+            {k.title}
+            <span className="ml-auto text-(--ui-text-tertiary)">{k.blurb}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

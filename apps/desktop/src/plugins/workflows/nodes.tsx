@@ -1,5 +1,5 @@
 import { Codicon, GlyphSpinner, type SpinnerName } from '@hermes/plugin-sdk'
-import { Handle, type NodeProps, Position, type ReactFlowState, useStore, useUpdateNodeInternals } from '@xyflow/react'
+import { Handle, type Node, type NodeProps, Position, type ReactFlowState, useStore, useUpdateNodeInternals } from '@xyflow/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useFlowDir, usePorts } from './direction'
@@ -507,11 +507,23 @@ function BackPort({ id }: { id: string }) {
   )
 }
 
-/** The card shell's class list. Both node components render the same outer
- *  div, and a hook added to one and not the other is a bug that only shows on
- *  one kind of card. */
-const cardClass = (kind: string, dir: FlowDir, rt: StepRuntime, selected?: boolean) =>
-  `node ${kind} dir-${dir.toLowerCase()} status-${rt.status}${rt.skipped ? ' skipped' : ''}${selected ? ' sel' : ''}`
+/** Everything the card shell's outer div carries. Both node components render
+ *  the same div, and a hook added to one and not the other is a bug that only
+ *  shows on one kind of card — so it goes here, not at the call sites.
+ *
+ *  `data-tour` is the step's addressable handle. The tour engine's target
+ *  scanner treats `data-tour` as the one selector durable enough to survive a
+ *  re-render, and a React Flow card otherwise offers nothing it will accept —
+ *  no id, no test id, no unique aria-label — so a tour of the graph could only
+ *  point at nodes by `nth-child` path, which stops being the same step the
+ *  moment anything reorders. `aria-label` is what makes the scan READABLE:
+ *  without it a target is labelled by the card's concatenated text, and the
+ *  agent picks its steps out of a wall of run output. */
+const cardProps = (id: string, def: StepDef, dir: FlowDir, rt: StepRuntime, selected?: boolean) => ({
+  'aria-label': `${def.title} — ${def.kind} step`,
+  className: `node ${def.kind} dir-${dir.toLowerCase()} status-${rt.status}${rt.skipped ? ' skipped' : ''}${selected ? ' sel' : ''}`,
+  'data-tour': `step:${id}`
+})
 
 // ---- Worker node (agent or human) --------------------------------------------
 export function AgentNode({ id, data }: NodeProps) {
@@ -528,7 +540,7 @@ export function AgentNode({ id, data }: NodeProps) {
   )
 
   return (
-    <div className={cardClass(def.kind, dir, rt, selected)} ref={ref}>
+    <div {...cardProps(id, def, dir, rt, selected)} ref={ref}>
       {/* Every step carries the full set. These used to be conditional on two
           hardcoded seed ids — the first step had no input and the last had no
           output — so the head of the flow could never be fed and nothing could
@@ -619,7 +631,7 @@ export function GateNode({ id, data }: NodeProps) {
   const ports = usePorts()
 
   return (
-    <div className={cardClass(def.kind, dir, rt, selected)} ref={ref}>
+    <div {...cardProps(id, def, dir, rt, selected)} ref={ref}>
       <Handle id="in" position={ports.target} type="target" />
       <BackPort id={id} />
       <NodeArc status={rt.status} />
@@ -644,5 +656,26 @@ export const nodeTypes = {
   agent: AgentNode,
   human: AgentNode,
   gate: GateNode,
-  wait: GateNode
+  wait: GateNode,
+  note: NoteNode
+}
+
+/** React Flow's text node — a label in the graph, not a step. Pans and
+ *  drags with the canvas; never saved into the scenario. */
+export const CANVAS_NOTE_ID = '__note'
+
+export function canvasNote(label = 'The canvas is listening'): Node {
+  return {
+    id: CANVAS_NOTE_ID,
+    type: 'note',
+    position: { x: 0, y: 0 },
+    data: { label },
+    draggable: true,
+    connectable: false,
+    selectable: false
+  }
+}
+
+function NoteNode({ data }: NodeProps<{ label: string }>) {
+  return <div className="canvas-note">{data.label}</div>
 }

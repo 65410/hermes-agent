@@ -29,6 +29,7 @@ import {
   updateStep,
   validate
 } from './graph'
+import { DEFAULT_DIR, type FlowDir } from './layout'
 import {
   KIND_FIELDS,
   MODEL_OPTIONS,
@@ -331,7 +332,16 @@ export interface RunControl {
 
 const str = (a: ToolArgs, k: string) => (typeof a[k] === 'string' ? (a[k] as string) : undefined)
 
-export function callTool(graph: Graph, run: RunControl, name: string, args: ToolArgs = {}): OpResult {
+/** Run one op. `dir` is the canvas's current orientation — placement is the
+ *  one thing an op can't work out from the graph alone, because a rank step
+ *  runs down a vertical canvas and across a horizontal one. */
+export function callTool(
+  graph: Graph,
+  run: RunControl,
+  name: string,
+  args: ToolArgs = {},
+  dir: FlowDir = DEFAULT_DIR
+): OpResult {
   const no = (m: string): OpResult => ({ ok: false, graph, message: m })
 
   switch (name) {
@@ -359,7 +369,8 @@ export function callTool(graph: Graph, run: RunControl, name: string, args: Tool
         onEdge: str(args, 'on_edge'),
         after: str(args, 'after'),
         before: str(args, 'before'),
-        config: args.config as Partial<StepConfig> | undefined
+        config: args.config as Partial<StepConfig> | undefined,
+        dir
       })
     }
 
