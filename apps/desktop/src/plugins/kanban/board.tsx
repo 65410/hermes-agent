@@ -30,11 +30,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   ErrorState,
+  Field,
   formatModifierToken,
   host,
   Input,
   isSubmitEnter,
   Loader,
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderCount,
+  PageHeaderTitle,
+  PageShell,
   SearchField,
   Select,
   SelectContent,
@@ -95,7 +101,6 @@ import {
   columnHelp,
   columnLabel,
   errText,
-  FIELD_LABEL,
   isLockedTarget,
   lockedReason,
   PriorityGlyph,
@@ -534,15 +539,6 @@ function Column({
 const NO_PARENT = '__none__'
 const PARKED = '__parked__'
 const WORKSPACE_KINDS = ['scratch', 'worktree', 'dir'] as const
-
-function Field({ children, label }: { children: ReactNode; label: string }) {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className={FIELD_LABEL}>{label}</span>
-      {children}
-    </label>
-  )
-}
 
 function NewTaskDialog({
   onClose,
@@ -1334,17 +1330,16 @@ export function KanbanBoardPage() {
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
-      <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
-        <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
-          {total}
-        </span>
-        {/* The full page projects this into its page header; a split tile has
-            none, so the switcher stays here in the row. */}
-        <WorkspacePageHeaderControl id="kanban:board-switcher">
-          <BoardSwitcher />
-        </WorkspacePageHeaderControl>
+    <PageShell>
+      {/* The full page projects this into its page header; a split tile has
+          none, so the switcher stays here in the row. */}
+      <WorkspacePageHeaderControl id="kanban:board-switcher">
+        <BoardSwitcher />
+      </WorkspacePageHeaderControl>
+
+      <PageHeader>
+        <PageHeaderTitle>{k.title}</PageHeaderTitle>
+        <PageHeaderCount>{total}</PageHeaderCount>
         {board && (
           <FilterMenu
             archived={archived}
@@ -1357,7 +1352,7 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+        <PageHeaderActions>
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1373,8 +1368,8 @@ export function KanbanBoardPage() {
             <Codicon name="add" size="0.8rem" />
             {k.newTask}
           </Button>
-        </div>
-      </header>
+        </PageHeaderActions>
+      </PageHeader>
 
       {settingsOpen && <OrchestrationPanel />}
 
@@ -1439,6 +1434,6 @@ export function KanbanBoardPage() {
 
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
       <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
-    </div>
+    </PageShell>
   )
 }
