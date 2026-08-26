@@ -23,11 +23,13 @@ import {
   SidePanelMeta,
   SidePanelMetaRow,
   SidePanelSection,
-  TextTab
+  TextTab,
+  useValue
 } from '@hermes/plugin-sdk'
 import type { Node } from '@xyflow/react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { $currentId, $webhooks } from './documents'
 import { Segmented, Select, Stepper, Switch } from './controls'
 import {
   addArm,
@@ -59,6 +61,8 @@ import {
   type PredicateMode,
   STEP_KINDS,
   type StepConfig,
+  TRIGGER_KIND_OPTIONS,
+  type TriggerKind,
   WAIT_KIND_OPTIONS,
   type WaitKind
 } from './scenario'
@@ -299,6 +303,7 @@ export function Inspector({
   const isHuman = def.kind === 'human'
   const budgets = (['maxIterations', 'maxRetries', 'timeoutMins'] as const).some(has)
   const problems = useMemo(() => validate(graph).filter(p => p.step === def.id), [graph, def.id])
+  const webhook = useValue($webhooks)[useValue($currentId) ?? '']
 
   return (
     <div className="ins">
@@ -356,7 +361,7 @@ export function Inspector({
 
             {/* The kind was the one thing about a step you couldn't change
                 after minting it, which made picking wrong at creation a
-                delete-and-rewire. Four options, so they're all on show —
+                delete-and-rewire. Five options, so they're all on show —
                 which kind a step is decides what the rest of this panel even
                 offers, and that's not a choice to hide behind a click. */}
             <Field label="Type" tip="What runs this step. Changing it keeps the name, the instruction and the wiring.">
@@ -499,6 +504,51 @@ export function Inspector({
                   value={config.assignee ?? ''}
                 />
               </Field>
+            )}
+
+            {has('on') && (
+              <>
+                <Field label="Starts on" tip="What begins a run of this workflow.">
+                  <Segmented
+                    onChange={(v: TriggerKind) => onChange({ on: { type: v, spec: config.on?.spec ?? '' } })}
+                    options={TRIGGER_KIND_OPTIONS.map(o => ({ value: o.value, label: o.label }))}
+                    value={config.on?.type ?? 'manual'}
+                  />
+                </Field>
+                {(config.on?.type ?? 'manual') !== 'manual' && (
+                  <Field
+                    label="When"
+                    tip={TRIGGER_KIND_OPTIONS.find(o => o.value === (config.on?.type ?? 'manual'))?.hint}
+                  >
+                    <input
+                      className="inp"
+                      onChange={e =>
+                        onChange({
+                          on: { type: config.on?.type ?? 'cron', spec: e.target.value }
+                        })
+                      }
+                      placeholder={
+                        (config.on?.type ?? 'cron') === 'cron'
+                          ? 'every 2h'
+                          : (config.on?.type ?? 'cron') === 'webhook'
+                            ? 'saved on the gateway as wf:<workflow>'
+                            : 'github.pull_request.merged'
+                      }
+                      value={config.on?.spec ?? ''}
+                    />
+                  </Field>
+                )}
+                {(config.on?.type ?? 'manual') === 'webhook' && webhook && (
+                  <>
+                    <Field label="Route" tip="POST this path on the webhook gateway. HMAC in the usual header.">
+                      <input className="inp" readOnly value={`/webhooks/${webhook.route}`} />
+                    </Field>
+                    <Field label="HMAC" tip="Stored under HERMES_HOME/workflows/secrets.json.">
+                      <input className="inp" readOnly value={webhook.secret} />
+                    </Field>
+                  </>
+                )}
+              </>
             )}
 
             {has('until') && (

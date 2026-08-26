@@ -1,28 +1,15 @@
-// Stands in for a gateway client: it holds the event stream, and everything the
-// UI shows is a fold over a prefix of it.
-//
-// Two separate things live here. Running the scenario appends events to the
-// log — forward only, an LLM can't be rewound. REPLAY applies fewer events:
-// seeking the playhead re-renders the world as it was, with no history store
-// and no snapshot format. The canvas is the live surface; the timeline replays
-// the past.
-//
-// The scrubbing asymmetry is the one StarCraft II documents for its own
-// replays: rewinding to any point is instant, but going forward only reaches
-// what has already been simulated.
-//
-// Pause is "when available", the way LangGraph interrupts and Prefect pauses
-// work: a run suspends at a step boundary, never mid-LLM. Requesting a pause
-// lets whatever is in flight finish and stops the next dispatch; resume picks
-// up exactly there. In real Hermes this is the executor not spawning the next
-// delegate_task (kanban's needs_input block); here it's the pump not
-// scheduling the next NodeStarted.
+// The canvas folds a prefix of the gateway event log. Play starts a real run;
+// the bus is the only source after a one-shot catch-up. Seeking reapplies
+// fewer events — the run itself is not rewound.
 
+import { host } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import type { RunPlan } from './graph'
 import { type Checkpoint, checkpointsOf, type ProtoEvent, reduceEvents, type RunShape, type World } from './protocol'
-import { buildTimeline, type RunPlan, type TimelineStep } from './run.fake'
 import type { OnFail } from './scenario'
+
+const LIVE: ReadonlySet<string> = new Set(['running', 'paused', 'waiting_human', 'waiting_world'])
 
 /** none → (pause requested) pausing → (boundary reached) paused → resume. */
 export type PauseState = 'none' | 'pausing' | 'paused'
@@ -110,39 +97,19 @@ const shapeOf = (plan: RunPlan): RunShape => ({
  *  the shape travels with it: seeking replays the log against the graph the run
  *  was built from, so editing mid-replay can't retune the past. */
 export function usePlayer(planOf: () => RunPlan): Player {
-  // A ref, not state: start() builds the timeline and enters the pump in the
-  // same tick, so a state setter would hand the pump the previous render's
-  // timeline — on the first run, an empty one, and the run would end before it
-  // began. Nothing renders the timeline; only the pump reads it.
-  const timelineRef = useRef<TimelineStep[]>([])
-  // The shape does render — the world is folded against it — so it's state.
   const [shape, setShape] = useState<RunShape>(() => shapeOf(planOf()))
-
   const [events, setEvents] = useState<ProtoEvent[]>([])
   const [head, setHead] = useState<number | null>(null) // null = follow tail
   const [running, setRunning] = useState(false)
   const [pauseState, setPauseState] = useState<PauseState>('none')
-
-  const nextRef = useRef(0) // next timeline index to emit
-  const timerRef = useRef<number | null>(null)
   const runIdRef = useRef('run-idle')
-  const pumpRef = useRef<() => void>(() => {})
   const eventsRef = useRef<ProtoEvent[]>([])
   const headRef = useRef(0)
   const pauseRef = useRef<PauseState>('none')
-  const activeRef = useRef(new Set<string>()) // steps currently mid-flight
   const [asking, setAsking] = useState<Question | null>(null)
   const askingRef = useRef<Question | null>(null)
-  const askAtRef = useRef(0) // index of the HumanWaiting we're parked on
   const [deferred, setDeferred] = useState(false)
-
-  const stop = useCallback(() => {
-    if (timerRef.current != null) {
-      window.clearTimeout(timerRef.current)
-    }
-
-    timerRef.current = null
-  }, [])
+  const liveRun = useRef<string | null>(null)
 
   const setPause = (s: PauseState) => {
     pauseRef.current = s
@@ -157,217 +124,105 @@ export function usePlayer(planOf: () => RunPlan): Player {
     setDeferred(false)
   }
 
-  const append = (step: TimelineStep, seq: number, payload?: object) =>
-    setEvents(prev => [
-      ...prev,
-      {
-        runId: runIdRef.current,
-        seq,
-        ts: Date.now(),
-        type: step.type,
-        payload: { ...step.payload, ...payload }
-      } as ProtoEvent
-    ])
-
-  // Walk the timeline, appending one event per scheduled tick.
-  pumpRef.current = () => {
-    const timeline = timelineRef.current
-    const i = nextRef.current
-
-    if (i >= timeline.length) {
-      setRunning(false)
-
-      if (pauseRef.current !== 'none') {
-        setPause('none')
-      } // finished first
-
-      return
-    }
-
-    const step = timeline[i]
-
-    // "Pause when available": the safe point is before a step dispatch while
-    // nothing else is mid-flight. In-flight work always finishes — the stream
-    // is linear, so holding a NodeStarted mid-fan-out would freeze a sibling's
-    // trace too, which a real scheduler wouldn't do.
-    if (pauseRef.current === 'pausing' && step.type === 'NodeStarted' && activeRef.current.size === 0) {
-      setPause('paused')
-
-      return // resume() re-enters the pump right here
-    }
-
-    // The park. The executor writes the approved branch down because that's the
-    // branch with a rest-of-the-run, but it is NOT allowed to answer on your
-    // behalf — the stream stops on the question and stays there. This is the
-    // whole reason `human` is a kind, and it used to elapse on a timer, which
-    // made every approval a 2.6s sleep wearing a person's name.
-    if (step.type === 'HumanResponded' && !askingRef.current) {
-      const j = timeline
-        .slice(0, i)
-        .findLastIndex(s => s.type === 'HumanWaiting' && s.payload.nodeId === step.payload.nodeId)
-
-      const w = timeline[j]
-
-      if (w?.type === 'HumanWaiting') {
-        askAtRef.current = j
-        ask(w.payload)
-
-        return
-      }
-    }
-
-    const prevAt = i === 0 ? 0 : timeline[i - 1].atMs
-    const delay = Math.max(0, timeline[i].atMs - prevAt)
-    timerRef.current = window.setTimeout(() => {
-      nextRef.current = i + 1
-      const p = step.payload as { nodeId?: string }
-
-      if (step.type === 'NodeStarted' && p.nodeId) {
-        activeRef.current.add(p.nodeId)
-      }
-
-      if ((step.type === 'NodeFinished' || step.type === 'NodeFailed' || step.type === 'GateEvaluated') && p.nodeId) {
-        activeRef.current.delete(p.nodeId)
-      }
-
-      append(step, i)
-      pumpRef.current()
-    }, delay)
-  }
-
-  useEffect(() => stop, [stop])
+  const adoptLive = useCallback((runId: string, incoming: ProtoEvent[]) => {
+    liveRun.current = runId
+    runIdRef.current = runId
+    setEvents(incoming)
+    const waiting = [...incoming].reverse().find(e => e.type === 'HumanWaiting')
+    const answered = waiting
+      ? incoming.some(e => e.type === 'HumanResponded' && e.payload.nodeId === waiting.payload.nodeId && e.seq > waiting.seq)
+      : false
+    ask(!answered && waiting?.type === 'HumanWaiting' ? waiting.payload : null)
+  }, [])
 
   const start = useCallback(() => {
-    stop()
     const plan = planOf()
-    timelineRef.current = buildTimeline(plan)
     setShape(shapeOf(plan))
-    runIdRef.current = `run-${Date.now()}`
-    nextRef.current = 0
-    activeRef.current.clear()
     setPause('none')
     ask(null)
     setEvents([])
     setHead(null)
+
+    if (!plan.id) {
+      setRunning(false)
+
+      return
+    }
+
     setRunning(true)
-    pumpRef.current()
-  }, [planOf, stop])
+    void host
+      .request<{ runId: string }>('workflow.run.start', {
+        workflowId: plan.id,
+        scenario: plan.scenario,
+        source: 'manual'
+      })
+      .then(async res => {
+        liveRun.current = res.runId
+        runIdRef.current = res.runId
+        const snap = await host.request<{ events?: ProtoEvent[] }>('workflow.run.events', {
+          runId: res.runId,
+          after: -1
+        })
+        if (liveRun.current === res.runId) {
+          adoptLive(res.runId, snap.events ?? [])
+        }
+      })
+      .catch(() => {
+        liveRun.current = null
+        setRunning(false)
+      })
+  }, [adoptLive, planOf])
 
   const reset = useCallback(() => {
-    stop()
-    nextRef.current = 0
-    activeRef.current.clear()
+    const id = liveRun.current
+    if (id) {
+      void host.request('workflow.run.cancel', { runId: id }).catch(() => {})
+    }
+    liveRun.current = null
     setPause('none')
     ask(null)
     setEvents([])
     setHead(null)
     setRunning(false)
-  }, [stop])
+  }, [])
 
-  const respond = useCallback(
-    (decision: 'approved' | 'denied') => {
-      const q = askingRef.current
+  const respond = useCallback((decision: 'approved' | 'denied') => {
+    const q = askingRef.current
 
-      if (!q) {
-        return
-      }
-
-      const i = nextRef.current
-      const step = timelineRef.current[i]
-
-      if (!step || step.type !== 'HumanResponded') {
-        return
-      }
-
-      ask(null)
-      activeRef.current.delete(q.nodeId)
-      append(step, i, { decision, by: q.who })
-
-      if (decision === 'approved') {
-        nextRef.current = i + 1
-        pumpRef.current()
-
-        return
-      }
-
-      // A "no" is this step failing, so what happens next is the step's own
-      // on-failure setting rather than a rule the dialog invents. Only retry
-      // has anywhere to go — asking again — and the rest stop the run, because
-      // the branch nobody wrote down is the one where the work continues past a
-      // refusal.
-      if (q.onFail === 'retry') {
-        // Back to the question itself, which the parallel branches mean isn't
-        // always the event right before the answer.
-        nextRef.current = askAtRef.current
-        pumpRef.current()
-
-        return
-      }
-
-      stop()
-      nextRef.current = timelineRef.current.length
-      setEvents(prev => [
-        ...prev,
-        {
-          runId: runIdRef.current,
-          seq: i + 1,
-          ts: Date.now(),
-          type: 'RunFinished',
-          payload: { state: 'failed' }
-        } as ProtoEvent
-      ])
-      setRunning(false)
-    },
-    [stop]
-  )
-
-  const requestPause = useCallback(() => {
-    // Parked on a person, so there is nothing in flight to pause — and the
-    // pump won't be re-entered until the question is answered, which is the
-    // only place 'pausing' ever resolves. Accepting the request here left the
-    // transport pulsing on "pausing" with no way out but a restart, and it's
-    // the first thing you reach for after putting the dialog away.
-    if (askingRef.current) {
+    if (!q || !liveRun.current) {
       return
     }
 
-    if (timerRef.current == null) {
-      return
-    } // no run in flight
+    void host
+      .request('workflow.run.respond', {
+        runId: liveRun.current,
+        nodeId: q.nodeId,
+        decision,
+        by: q.who
+      })
+      .then(() => ask(null))
+      .catch(() => {})
+  }, [])
 
-    if (pauseRef.current !== 'none') {
+  const requestPause = useCallback(() => {
+    if (askingRef.current || !liveRun.current || pauseRef.current !== 'none') {
       return
     }
 
     setPause('pausing')
+    void host.request('workflow.run.pause', { runId: liveRun.current }).catch(() => {})
   }, [])
 
-  // Resuming always returns to the tail. You paused by reaching into history;
-  // pressing play means "carry on from now", not "replay from where I was
-  // looking" — the log only moves forward, so a head left in the past would
-  // just sit there while new events piled up behind it.
   const resume = useCallback(() => {
-    if (pauseRef.current !== 'paused') {
+    if (pauseRef.current !== 'paused' || !liveRun.current) {
       return
     }
 
     setHead(null)
     setPause('none')
-    pumpRef.current()
+    void host.request('workflow.run.resume', { runId: liveRun.current }).catch(() => {})
   }, [])
 
-  // Replay: detach the view from the tail. The run is untouched.
-  //
-  // Scrubbing to the very end re-attaches instead of pinning the head there.
-  // That's what makes a "go live" button unnecessary — the end of the track IS
-  // live, so dragging back to it resumes following the run, and a run that
-  // keeps appending stays visible rather than stopping at a stale head.
-  //
-  // Touching the scrubber while events are still arriving also PAUSES the run.
-  // Watching the tail while replaying the past is incoherent: the track keeps
-  // growing under the playhead, so the point you dragged to slides away from
-  // you. Reaching into the replay is an unambiguous "hold on" — same reason
-  // every video player stops advancing when you grab the scrubber.
   const seek = useCallback((h: number) => {
     const total = eventsRef.current.length
     const clamped = Math.max(0, Math.min(h, total))
@@ -379,16 +234,15 @@ export function usePlayer(planOf: () => RunPlan): Player {
       return
     }
 
-    if (timerRef.current != null && pauseRef.current === 'none') {
+    if (liveRun.current && pauseRef.current === 'none') {
       setPause('pausing')
+      void host.request('workflow.run.pause', { runId: liveRun.current }).catch(() => {})
     }
 
     headRef.current = clamped
     setHead(clamped)
   }, [])
 
-  // Back to now. Kept on the Player because the composer's "resume"/"go live"
-  // intents call it; the timeline has no button for it by design.
   const goLive = useCallback(() => {
     setHead(null)
   }, [])
@@ -396,8 +250,6 @@ export function usePlayer(planOf: () => RunPlan): Player {
   const checkpoints = useMemo(() => checkpointsOf(events), [events])
   const effHead = head ?? events.length
 
-  // Mirrored so consecutive clicks step instead of all resolving against the
-  // head from the last render.
   eventsRef.current = events
   headRef.current = effHead
 
@@ -416,15 +268,6 @@ export function usePlayer(planOf: () => RunPlan): Player {
     [goLive, seek]
   )
 
-  // reduceEvents replays the log from zero, so every step comes back as a fresh
-  // object on every event — including the six that didn't move. Consumers key
-  // off identity (a node's `data.rt` changing is what re-renders its card), so
-  // a two-step run was re-rendering the whole graph forty times a second.
-  //
-  // The replay stays: it's what makes seeking free, and it's O(steps), not the
-  // cost anyone was paying. What changes is the handoff — a step whose new
-  // object is structurally identical to last frame's is handed back the OLD
-  // object, so only the steps that actually moved change hands.
   const prevWorld = useRef<World | null>(null)
 
   const world: World = useMemo(() => {
@@ -443,6 +286,65 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
     return next
   }, [events, effHead, shape])
+
+  useEffect(() => {
+    return host.onEvent('workflow.run', event => {
+      const incoming = event.payload as ProtoEvent | undefined
+      if (!incoming?.runId || incoming.runId !== liveRun.current) {
+        return
+      }
+
+      setEvents(prev => (prev.some(e => e.seq === incoming.seq) ? prev : [...prev, incoming]))
+
+      if (incoming.type === 'HumanWaiting') {
+        ask(incoming.payload)
+      }
+
+      if (incoming.type === 'HumanResponded' && askingRef.current?.nodeId === incoming.payload.nodeId) {
+        ask(null)
+      }
+
+      if (incoming.type === 'RunPaused') {
+        setPause('paused')
+      }
+
+      if (incoming.type === 'RunFinished') {
+        setRunning(false)
+        setPause('none')
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    const plan = planOf()
+    if (!plan.id) {
+      return
+    }
+
+    let cancelled = false
+    void host
+      .request<{ runId?: string; run?: { status: string }; events?: ProtoEvent[] }>('workflow.run.active', {
+        workflowId: plan.id
+      })
+      .then(res => {
+        if (cancelled || !res.runId || !res.run || !LIVE.has(res.run.status)) {
+          return
+        }
+
+        setShape(shapeOf(plan))
+        adoptLive(res.runId, res.events ?? [])
+        setRunning(true)
+        setHead(null)
+        if (res.run.status === 'paused') {
+          setPause('paused')
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [adoptLive, planOf])
 
   return {
     events,

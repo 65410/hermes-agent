@@ -16,7 +16,6 @@ import type { Edge, Node, XYPosition } from '@xyflow/react'
 import { DEFAULT_DIR, type FlowDir, freeRow, freeSpot, heightOf, RANK_GAP, tidyLayout, widthOf } from './layout'
 import type { NodeData } from './nodes'
 import { freshRuntime } from './protocol'
-import type { RunPlan } from './run.fake'
 import {
   type Arm,
   defaultConfig,
@@ -126,7 +125,7 @@ export function addStep(g: Graph, input: AddStepInput): OpResult {
   const spec = STEP_KINDS.find(k => k.kind === input.kind)
 
   if (!spec) {
-    return fail(g, `There's no "${input.kind}" kind — use agent, gate, human or wait.`)
+    return fail(g, `There's no "${input.kind}" kind — use agent, gate, human, wait or trigger.`)
   }
 
   const title = input.title?.trim() || spec.title
@@ -712,7 +711,7 @@ export function setKind(g: Graph, ref: string, kind: StepKind): OpResult {
   const spec = STEP_KINDS.find(k => k.kind === kind)
 
   if (!spec) {
-    return fail(g, `There's no "${kind}" kind — use agent, gate, human or wait.`)
+    return fail(g, `There's no "${kind}" kind — use agent, gate, human, wait or trigger.`)
   }
 
   const data = dataOf(node)
@@ -937,6 +936,24 @@ export function validate(g: Graph): Problem[] {
       problems.push({ level: 'warning', message: `${id} doesn't say what it waits for.`, step: id })
     }
 
+    if (hasField(def.kind, 'on')) {
+      const incoming = g.edges.filter(e => e.target === id)
+      if (incoming.length) {
+        problems.push({
+          level: 'warning',
+          message: `${id} is a trigger — incoming wires are ignored. A trigger is an entry.`,
+          step: id
+        })
+      }
+      if (config.on && config.on.type !== 'manual' && !config.on.spec.trim()) {
+        problems.push({
+          level: 'warning',
+          message: `${id} doesn't say what starts the run.`,
+          step: id
+        })
+      }
+    }
+
     if (hasField(def.kind, 'goal') && !config.goal?.trim()) {
       problems.push({
         level: 'warning',
@@ -949,13 +966,22 @@ export function validate(g: Graph): Problem[] {
   return problems
 }
 
-/** The graph, reduced to what running it needs.
- *
- *  The executor takes this rather than the graph itself so it never has to know
+/** The graph, reduced to what running it needs. */
+export interface RunPlan {
+  id?: string
+  name: string
+  scenario?: Scenario
+  steps: { id: string; kind: StepKind; config: StepConfig }[]
+  edges: { id: string; source: string; target: string; sourceHandle?: string; loop?: boolean }[]
+}
+
+/** The executor takes this rather than the graph itself so it never has to know
  *  about React Flow — same reason toScenario exists, and the same boundary. */
-export function runPlan(g: Graph, name: string): RunPlan {
+export function runPlan(g: Graph, name: string, id?: string): RunPlan {
   return {
+    id,
     name,
+    scenario: toScenario(g),
     steps: stepNodes(g).map(n => {
       const { def, config } = dataOf(n)
 

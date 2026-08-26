@@ -180,9 +180,9 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // The run is built from whatever is on the canvas when you press play, so the
   // player reads the graph through a ref rather than taking it as a prop — it's
   // mounted above the node state, and re-arming it on every keystroke would
-  // rebuild the timeline while you type.
+  // rebuild the run shape while you type.
   const graphRef = useRef<Graph>({ nodes: [], edges: [] })
-  const planOf = useCallback(() => runPlan(graphRef.current, 'figma-to-pr'), [])
+  const planOf = useCallback(() => runPlan(graphRef.current, doc.name, doc.id), [doc.id, doc.name])
   const player = usePlayer(planOf)
 
   const { world, frozenAt, live } = player

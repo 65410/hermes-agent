@@ -125,6 +125,15 @@ const configSchema = {
         spec: { type: 'string', description: "e.g. '24h', 'github.pull_request.merged', 'every 5m'." }
       },
       required: ['type', 'spec']
+    },
+    on: {
+      type: 'object',
+      description: 'Trigger steps: what starts a run.',
+      properties: {
+        type: { type: 'string', enum: ['manual', 'cron', 'webhook', 'event'] },
+        spec: { type: 'string', description: "e.g. 'every 2h', 'github.pull_request.merged'." }
+      },
+      required: ['type']
     }
   }
 } as const

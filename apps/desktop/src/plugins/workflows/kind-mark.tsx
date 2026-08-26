@@ -9,6 +9,7 @@ export const KIND_ICON: Record<KindMarkName, string> = {
   gate: 'git-branch',
   human: 'person',
   wait: 'clock',
+  trigger: 'zap',
   judge: 'eye'
 }
 

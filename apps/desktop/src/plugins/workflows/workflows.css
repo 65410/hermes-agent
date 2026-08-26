@@ -810,6 +810,9 @@
   .tile-wait {
     color: var(--ui-text-secondary);
   }
+  .tile-trigger {
+    color: var(--scenario-loop);
+  }
   /* There is no type label under the title. The mark to its left says
      agent-or-gate already, and on a gate the branch slots say it again. */
   /* The card's headline, and it should win first fixation. It was --fs-body on a

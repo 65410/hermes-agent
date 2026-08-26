@@ -6,14 +6,14 @@
  * The canvas is schema-driven: `scenario.ts` names every field a step can
  * carry, `graph.ts` is the only thing that mutates the document, and
  * `graph-tools.ts` publishes those same mutations as tool descriptors — so an
- * agent edit and a hand edit are the same operation. `run.fake.ts` walks the
- * live graph to produce a run; nothing about the playback is scripted.
+ * agent edit and a hand edit are the same operation.
  *
  * That op vocabulary is what makes the page drivable. `bridge.ts` serves the
  * `workflow` tool over it, so Hermes can read and edit the user's workflows
  * from any chat — and the canvas composer is Hermes too, a full agent turn
- * with every tool it normally has. You build by hand, or by asking, or both in
- * the same minute, against one document.
+ * with every tool it normally has. Play starts a gateway run against the
+ * HERMES_HOME copy; the canvas tails the same event log. You build by hand,
+ * or by asking, or both in the same minute, against one document.
  *
  * Ships OFF by default (`defaultEnabled: false`): it inventories in
  * Settings ▸ Plugins and registers nothing until the user flips the switch.

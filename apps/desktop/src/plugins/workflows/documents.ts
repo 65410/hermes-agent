@@ -9,11 +9,11 @@
  * `Scenario` is the stored shape rather than React Flow's nodes and edges,
  * because it's the schema `graph.ts`, `graph-tools.ts` and the agent already
  * agree on, and it round-trips losslessly through `toScenario`/`fromScenario`
- * — card positions included. Persistence is the plugin's own namespaced
- * storage: no backend, and nothing of this leaves the machine.
+ * — card positions included. The plugin cache is local; the copy the gateway
+ * runs lives under HERMES_HOME and is written through `workflow.store.*`.
  */
 
-import { atom } from '@hermes/plugin-sdk'
+import { atom, host } from '@hermes/plugin-sdk'
 
 import type { Scenario } from './scenario'
 
@@ -31,6 +31,9 @@ export const $workflows = atom<WorkflowDoc[]>([])
 
 /** The open one. `null` when there are none, which is the empty state. */
 export const $currentId = atom<string | null>(null)
+
+/** HMAC + route for webhook-triggered workflows, from the gateway store. */
+export const $webhooks = atom<Record<string, { route: string; secret: string }>>({})
 
 const DOCS_KEY = 'documents'
 const CURRENT_KEY = 'currentId'
@@ -105,20 +108,87 @@ export interface DocStorage {
  *  document every frame, and serialising a scenario into localStorage sixty
  *  times a second is felt in the drag. The atom stays immediate — the switcher
  *  reads that, and it should never lag the canvas. */
+function persistRemote(docs: WorkflowDoc[], currentId: string | null): void {
+  void host
+    .request<{
+      triggers?: { webhooks?: Record<string, string> }
+    }>('workflow.store.put', { docs, currentId })
+    .then(res => {
+      const secrets = res.triggers?.webhooks
+      if (!secrets) {
+        return
+      }
+
+      $webhooks.set(
+        Object.fromEntries(Object.entries(secrets).map(([id, secret]) => [id, { route: `wf:${id}`, secret }]))
+      )
+    })
+    .catch(() => {
+      // Local cache still holds — a downed socket must not block a drag.
+    })
+}
+
 export function bindDocuments(storage: DocStorage): () => void {
   $workflows.set(storage.get<WorkflowDoc[]>(DOCS_KEY, []))
   $currentId.set(storage.get<string | null>(CURRENT_KEY, null))
 
   let timer = 0
+  let remoteReady = false
+  const initialDocs = $workflows.get()
+  const initialId = $currentId.get()
+
+  void host
+    .request<{
+      docs: WorkflowDoc[]
+      currentId: string | null
+      webhooks?: Record<string, { route: string; secret: string }>
+    }>('workflow.store.list')
+    .then(remote => {
+      const dirty = $workflows.get() !== initialDocs || $currentId.get() !== initialId
+      if (dirty) {
+        persistRemote($workflows.get(), $currentId.get())
+
+        return
+      }
+
+      if (remote.webhooks) {
+        $webhooks.set(remote.webhooks)
+      }
+
+      if (remote.docs?.length) {
+        $workflows.set(remote.docs)
+        if (remote.currentId) {
+          $currentId.set(remote.currentId)
+        }
+      } else if ($workflows.get().length) {
+        persistRemote($workflows.get(), $currentId.get())
+      }
+    })
+    .catch(() => {
+      // Stay on the plugin cache when the gateway method is missing.
+    })
+    .finally(() => {
+      remoteReady = true
+    })
 
   const unsubs = [
     $workflows.listen(docs => {
       window.clearTimeout(timer)
-      timer = window.setTimeout(() => storage.set(DOCS_KEY, docs), 400)
+      timer = window.setTimeout(() => {
+        storage.set(DOCS_KEY, docs)
+        if (remoteReady) {
+          persistRemote(docs, $currentId.get())
+        }
+      }, 400)
     }),
     // Switching is a discrete act and there's nothing to coalesce, so it lands
     // at once — a reload right after a switch must reopen what you switched to.
-    $currentId.listen(id => storage.set(CURRENT_KEY, id))
+    $currentId.listen(id => {
+      storage.set(CURRENT_KEY, id)
+      if (remoteReady) {
+        persistRemote($workflows.get(), id)
+      }
+    })
   ]
 
   return () => {

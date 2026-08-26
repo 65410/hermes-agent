@@ -12,15 +12,16 @@
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-export type StepKind = 'agent' | 'gate' | 'human' | 'wait'
+export type StepKind = 'agent' | 'gate' | 'human' | 'wait' | 'trigger'
 
-/** What you can mint — the same four the seed graph is built from. */
+/** What you can mint — the same five the canvas and the runner share. */
 export const STEP_KINDS: readonly {
   kind: StepKind
   title: string
   blurb: string
   doing?: string
 }[] = [
+  { kind: 'trigger', title: 'Trigger', blurb: 'What starts a run' },
   { kind: 'agent', title: 'Agent', blurb: 'A model runs it', doing: 'Working' },
   { kind: 'gate', title: 'Gate', blurb: 'Branch on verdicts', doing: 'Routing' },
   { kind: 'human', title: 'Human', blurb: 'Park for a person' },
@@ -29,12 +30,13 @@ export const STEP_KINDS: readonly {
 
 export interface StepDef {
   id: string // tasks.current_step_key — what `needs:` and gate predicates name
-  /** Two families, four kinds.
+  /** Two families, five kinds.
       WORKERS spend effort and produce schema'd output:
         agent — a model runs it
         human — a person runs it (same contract; the brain is a person, the
                 spend is wall-clock). Smithers' HumanTask/ApprovalGate.
       CONTROL spends ~nothing and routes:
+        trigger — what starts a run (manual, cron, webhook, event)
         gate — a decision over data that already exists (branch/join)
         wait — a decision the WORLD makes (timer, poller, external event) */
   kind: StepKind
@@ -79,6 +81,8 @@ export interface StepConfig {
   assignee?: string
   /** wait: what the world has to do before the run moves on. */
   until?: WaitUntil
+  /** trigger: what starts a run. Mid-run holds stay on `until`. */
+  on?: TriggerOn
 }
 
 /** Which of those knobs each kind ACTUALLY has — the closed part of the schema.
@@ -108,7 +112,10 @@ export const KIND_FIELDS = {
   gate: ['title', 'arms', 'maxLoops'],
   // Control. The world decides, so the step holds no opinion at all beyond what
   // it's holding out for.
-  wait: ['title', 'until']
+  wait: ['title', 'until'],
+  // Entry only. Play is always a start; cron/webhook/event reuse Hermes
+  // surfaces that already exist rather than growing a second listener stack.
+  trigger: ['title', 'on']
 } as const satisfies Record<StepKind, readonly (keyof StepConfig)[]>
 
 export type KindField = (typeof KIND_FIELDS)[StepKind][number]
@@ -128,7 +135,8 @@ export const FIELD_LABEL: Record<KindField, string> = {
   maxLoops: 'take limit',
   arms: 'routing rules',
   assignee: 'assignee',
-  until: 'wait condition'
+  until: 'wait condition',
+  on: 'start condition'
 }
 
 /** Does this kind have this knob? The one question every consumer asks. */
@@ -165,7 +173,22 @@ export interface WaitUntil {
 export const WAIT_KIND_OPTIONS: { value: WaitKind; label: string; hint: string }[] = [
   { value: 'timer', label: 'Timer', hint: 'e.g. 24h — the run resumes when it elapses' },
   { value: 'event', label: 'Event', hint: 'e.g. github.pull_request.merged' },
-  { value: 'poll', label: 'Poll', hint: 'e.g. every 5m until the deploy is green' }
+  { value: 'poll', label: 'Poll', hint: 'Same bus as an event — the world has to tell us' }
+]
+
+/** What starts a run. Distinct from a mid-run wait — a trigger is an entry. */
+export type TriggerKind = 'manual' | 'cron' | 'webhook' | 'event'
+
+export interface TriggerOn {
+  type: TriggerKind
+  spec: string
+}
+
+export const TRIGGER_KIND_OPTIONS: { value: TriggerKind; label: string; hint: string }[] = [
+  { value: 'manual', label: 'Manual', hint: 'Play on the canvas starts it' },
+  { value: 'cron', label: 'Cron', hint: 'e.g. every 2h — Hermes cron fires it' },
+  { value: 'webhook', label: 'Webhook', hint: 'An inbound POST starts it with the payload' },
+  { value: 'event', label: 'Event', hint: 'e.g. github.pull_request.merged' }
 ]
 
 // ---------------------------------------------------------------------------
@@ -391,7 +414,8 @@ const KIND_DEFAULTS: { [K in StepKind]: ConfigOf<K> } = {
       { id: 'loop', when: { mode: 'any-fail' } }
     ]
   },
-  wait: { until: { type: 'timer', spec: '' } }
+  wait: { until: { type: 'timer', spec: '' } },
+  trigger: { on: { type: 'manual', spec: '' } }
 }
 
 export function defaultConfig(def: StepDef): StepConfig {
@@ -421,7 +445,8 @@ export function defaultConfig(def: StepDef): StepConfig {
     // Copied so two steps minted from the same defaults can't share a list or
     // an object — KIND_DEFAULTS is one instance per kind.
     arms: (s?.arms ?? kind.arms ?? []).map(a => ({ ...a })),
-    until: kind.until && { ...kind.until }
+    until: kind.until && { ...kind.until },
+    on: kind.on && { ...kind.on }
   }
 
   return { ...pruneConfig(def.kind, all), title: all.title } as StepConfig
@@ -437,6 +462,11 @@ export function defaultConfig(def: StepDef): StepConfig {
 //   (no wasted tokens re-reviewing unchanged work). All pass -> ship (PR).
 // ---------------------------------------------------------------------------
 export const STEP_DEFS: StepDef[] = [
+  {
+    id: 'start',
+    kind: 'trigger',
+    title: 'Play'
+  },
   {
     id: 'implement',
     kind: 'agent',
@@ -496,6 +526,7 @@ export interface EdgeDef {
 }
 
 export const EDGE_DEFS: EdgeDef[] = [
+  { id: 'start->implement', source: 'start', target: 'implement' },
   { id: 'implement->review', source: 'implement', target: 'review' },
   { id: 'implement->judge', source: 'implement', target: 'judge' },
   // both validators report into the join (the group)

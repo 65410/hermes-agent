@@ -270,6 +270,13 @@ function NodeMeta({ rt, config, elapsed }: { rt: StepRuntime; config: StepConfig
       items.push({ label: config.until.spec, title: waitTip(config.until) })
     }
 
+    if (config.on) {
+      items.push({
+        label: config.on.spec.trim() || config.on.type,
+        title: config.on.type === 'manual' ? 'Play starts it' : `Starts on ${config.on.type}`
+      })
+    }
+
     if (config.maxLoops) {
       items.push({ label: `${config.maxLoops} takes`, title: 'Sends back at most this many times' })
     }
@@ -649,14 +656,14 @@ export function GateNode({ id, data }: NodeProps) {
 }
 
 // Workers share one card — a human step IS an agent card whose brain is a
-// person (same contract: prompt in, structured output out). Wait shares the
-// gate's shape: a control step that routes without spending. Four kinds, two
-// components.
+// person (same contract: prompt in, structured output out). Wait and trigger
+// share the gate's shape: a control step that routes without spending.
 export const nodeTypes = {
   agent: AgentNode,
   human: AgentNode,
   gate: GateNode,
   wait: GateNode,
+  trigger: GateNode,
   note: NoteNode
 }
 

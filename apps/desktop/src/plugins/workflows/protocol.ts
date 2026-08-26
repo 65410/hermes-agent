@@ -18,9 +18,8 @@
 // zero edges. Those events are the canvas's own, and they're the whole cost of
 // the translation — small, and on our side of the line.
 //
-// Nothing here knows how the run is produced. The scripted demo in
-// run.fake.ts is one adapter; a kanban-backed executor or a Smithers gateway
-// would be others.
+// Nothing here knows how the run is produced. The gateway runner is one
+// adapter; a scripted fixture would be another.
 
 import type { OnFail } from './scenario'
 
@@ -92,6 +91,7 @@ export type EventType =
   | 'HumanResponded'
   | 'WaitStarted'
   | 'WaitResolved'
+  | 'RunPaused'
 
 /** Types the canvas has to synthesize because the engine doesn't report them. */
 export const HERMES_EXT: ReadonlySet<EventType> = new Set<EventType>([
@@ -107,7 +107,8 @@ export const HERMES_EXT: ReadonlySet<EventType> = new Set<EventType>([
   // both stop the run dead, but "waiting on you" is wrong over a timer, so the
   // world gets its own two events rather than borrowing the person's.
   'WaitStarted',
-  'WaitResolved'
+  'WaitResolved',
+  'RunPaused'
 ])
 
 interface Envelope {
@@ -119,6 +120,7 @@ interface Envelope {
 export type ProtoEvent =
   | (Envelope & { type: 'RunStarted'; payload: { scenario: string } })
   | (Envelope & { type: 'RunFinished'; payload: { state: 'succeeded' | 'failed' } })
+  | (Envelope & { type: 'RunPaused'; payload: Record<string, never> })
   | (Envelope & { type: 'NodePending'; payload: NodeRef })
   | (Envelope & {
       type: 'NodeStarted'
@@ -359,6 +361,9 @@ export function reduceEvents(events: ProtoEvent[], shape: RunShape, count = even
 
         break
 
+      case 'RunPaused':
+        break
+
       case 'NodePending':
         if (rt) {
           Object.assign(rt, freshRuntime(), {
@@ -595,6 +600,9 @@ export function feedLine(e: ProtoEvent): FeedLine | null {
 
     case 'RunFinished':
       return { ...base, step: 'run', kind: 'ok', msg: `run ${e.payload.state}` }
+
+    case 'RunPaused':
+      return { ...base, step: 'run', kind: 'data', msg: 'paused' }
 
     case 'NodeStarted':
       return {
