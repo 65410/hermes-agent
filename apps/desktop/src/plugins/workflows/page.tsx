@@ -5,6 +5,7 @@ import {
   cn,
   Codicon,
   composerDockCard,
+  Contribute,
   EmptyState,
   PageHeader,
   PageHeaderActions,
@@ -12,6 +13,7 @@ import {
   PageShell,
   SidePanel,
   Tip,
+  TITLEBAR_AREAS,
   useTheme,
   useValue
 } from '@hermes/plugin-sdk'
@@ -56,12 +58,13 @@ import type { RunControl } from './graph-tools'
 import { Inspector } from './inspector'
 import { DEFAULT_DIR, type FlowDir, tidyLayout } from './layout'
 import { LiveLog } from './livelog'
-import { CANVAS_NOTE_ID, canvasNote, type NodeData, nodeTypes } from './nodes'
-import { usePlayer } from './player'
+import { CANVAS_NOTE_ID, canvasNote, type NodeData, NodeLive, nodeTypes } from './nodes'
+import { RunNowProvider, usePlayer } from './player'
 import { type EdgeState, feedLine, type FeedLine, freshRuntime, type StepRuntime } from './protocol'
 import { blankScenario, starterScenario, type StepConfig, type StepKind } from './scenario'
 import { WorkflowSwitcher } from './switcher'
 import { Timeline } from './timeline'
+import { useTourPan } from './tour-pan'
 import { useUndoRedo } from './use-undo-redo'
 
 // Steps the agent adds mid-session have no runtime in the event stream — they
@@ -70,8 +73,8 @@ const IDLE_RT: StepRuntime = freshRuntime()
 
 // One width, two consumers: the panel wears it, and the canvas reads it as a
 // CSS var so the run dock re-centres on what's left of the canvas.
-const INSPECTOR_REM = '17.5rem'
-const INSPECTOR_WIDTH = 'w-[17.5rem]'
+const INSPECTOR_REM = '26rem'
+const INSPECTOR_WIDTH = 'w-[26rem]'
 
 /** A step appeared or disappeared — not a title edit, not a wire. Those are
  *  the moments the ranks have to be redone, or the new card sits wherever
@@ -116,27 +119,24 @@ export default function WorkflowsPage() {
   const currentId = useValue($currentId)
   const doc = docs.find(d => d.id === currentId)
 
-  if (!doc) {
-    return <FirstWorkflow />
-  }
-
-  // Keyed on the document: switching workflows is a fresh canvas, not a
-  // re-render of this one. Undo history, selection and the run all belong to
-  // the workflow you were looking at, and carrying any of them across would be
-  // a bug in every case.
   return (
-    <ReactFlowProvider key={doc.id}>
-      <Flow doc={doc} />
-    </ReactFlowProvider>
-  )
-}
-
-function NewWorkflowButton() {
-  return (
-    <Button onClick={() => createWorkflow('Untitled workflow', blankScenario())} size="sm">
-      <Codicon name="add" size="0.8rem" />
-      New workflow
-    </Button>
+    <>
+      {/* Page-owned titlebar chrome: exists exactly while this page is mounted. */}
+      <Contribute area={TITLEBAR_AREAS.center} id="workflows:switcher">
+        <WorkflowSwitcher />
+      </Contribute>
+      {doc ? (
+        // Keyed on the document: switching workflows is a fresh canvas, not a
+        // re-render of this one. Undo history, selection and the run all belong
+        // to the workflow you were looking at, and carrying any of them across
+        // would be a bug in every case.
+        <ReactFlowProvider key={doc.id}>
+          <Flow doc={doc} />
+        </ReactFlowProvider>
+      ) : (
+        <FirstWorkflow />
+      )}
+    </>
   )
 }
 
@@ -147,9 +147,6 @@ function FirstWorkflow() {
     <PageShell className="wf-root">
       <PageHeader>
         <PageHeaderTitle>Workflows</PageHeaderTitle>
-        <PageHeaderActions>
-          <NewWorkflowButton />
-        </PageHeaderActions>
       </PageHeader>
       <EmptyState
         className="min-h-0 flex-1"
@@ -229,7 +226,11 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // pointer, so the mouseup lands on the pane and would clear the selection
   // we just made. Swallow the next pane click after an add.
   const ignorePaneClick = useRef(false)
-  const { fitView } = useReactFlow()
+  const { fitView, screenToFlowPosition } = useReactFlow()
+
+  // A tour step's card may be off screen; the engine asks us to bring it in.
+  const canvasWrap = useRef<HTMLDivElement>(null)
+  useTourPan(canvasWrap, FIT)
 
   // Undo/redo are keyboard-only (⌘Z / ⌘⇧Z, bound inside the hook) — the canvas
   // takes the snapshots, the rail doesn't need buttons for them.
@@ -398,15 +399,18 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
 
   const updateConfig = (id: string, patch: Partial<StepConfig>) => {
     takeSnapshot()
-    const op = updateStep({ nodes, edges }, id, patch)
+    // Functional so a click can't apply the patch onto a `nodes` snapshot
+    // that the overlay or a drag already replaced.
+    setNodes(ns => {
+      const op = updateStep({ nodes: ns, edges }, id, patch)
 
-    if (op.ok) {
-      setNodes(op.graph.nodes)
-    }
+      return op.ok ? op.graph.nodes : ns
+    })
   }
 
-  // Click + / double-click only names WHERE. The picker names WHAT — otherwise
-  // the seed's gate/human/wait can never be minted, only edited.
+  // Click + / ⌘-or-Shift-click empty canvas only names WHERE. The picker
+  // names WHAT — otherwise the seed's gate/human/wait can never be minted,
+  // only edited. Space used to mint here; it is transport now.
   const requestAdd = useCallback((where: AddAt) => {
     ignorePaneClick.current = true
     setDraft(where)
@@ -422,6 +426,7 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
       }
 
       const next = addStep(nodes, edges, draft, kind, dir)
+      const dropped = draft.on === 'canvas'
       setDraft(null)
 
       if (!next.id) {
@@ -429,8 +434,9 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
       }
 
       takeSnapshot()
-      const placed = tidyLayout(next.nodes, next.edges, dir)
-      setNodes(placed)
+      // A canvas click already named the spot. Tidy would treat the unwired
+      // card as an orphan and stack it left of the graph.
+      setNodes(dropped ? next.nodes : tidyLayout(next.nodes, next.edges, dir))
       setEdges(next.edges)
       ignorePaneClick.current = true
       setSelected(next.id)
@@ -463,13 +469,13 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
       }
 
       takeSnapshot()
-      const next = laidOut(graph, op.graph, dir)
+      const next = laidOut(graphRef.current, op.graph, dir)
       setNodes(next.nodes)
       setEdges(next.edges)
 
       return { ...op, graph: next }
     },
-    [dir, graph, setEdges, setNodes, takeSnapshot]
+    [dir, setEdges, setNodes, takeSnapshot]
   )
 
   // A batch of agent ops arrives as a BUILD, not a jump cut. Landing six steps
@@ -819,15 +825,13 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   const askTitle = player.asking ? (nodeTitles[player.asking.nodeId] ?? player.asking.nodeId) : ''
 
   return (
+    <RunNowProvider value={{ start: player.start, fireWebhook: player.fireWebhook, running: player.running }}>
     <PageShell className="wf-root" style={{ '--wf-inspector': selNode ? INSPECTOR_REM : '0rem' } as CSSProperties}>
-      {/* A real header row rather than a panel floating over the graph: the
-          scenario's name is chrome, and floating it on top of the canvas made
-          it read as another node. Literally the Kanban board's header now, so
-          two plugin pages read as siblings. Theme and mode are the host's —
-          they live in Settings, not on this page. */}
+      {/* Same header as the Kanban board: the page name here, the current
+          workflow in the titlebar (see WorkflowSwitcher). Theme and mode are
+          the host's — they live in Settings, not on this page. */}
       <PageHeader>
         <PageHeaderTitle>Workflows</PageHeaderTitle>
-        <WorkflowSwitcher />
         <PageHeaderActions>
           {/* A divided box, not an arrow: the icon has to say "arrangement",
               and a lone chevron on a header button says "this opens something".
@@ -852,7 +856,6 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
               />
             </Button>
           </Tip>
-          <NewWorkflowButton />
         </PageHeaderActions>
       </PageHeader>
 
@@ -867,7 +870,9 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
             resetView()
           }
         }}
+        ref={canvasWrap}
       >
+        <NodeLive.Provider value={nodes}>
         <FlowDirProvider value={dir}>
           <AddStepProvider value={requestAdd}>
             <CutEdgeProvider value={cutEdge}>
@@ -920,16 +925,34 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
                 onConnectEnd={onConnectEnd}
                 onConnectStart={onConnectStart}
                 onEdgesChange={handleEdgesChange}
-                onNodeClick={(_, n) => {
-                  if (n.id !== CANVAS_NOTE_ID) {
-                    setSelected(n.id)
+                onNodeClick={(e, n) => {
+                  if (n.id === CANVAS_NOTE_ID) {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+                      requestAdd({
+                        on: 'canvas',
+                        at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
+                      })
+                    }
+
+                    return
                   }
+
+                  setSelected(n.id)
                 }}
                 onNodeDragStart={() => takeSnapshot()}
                 onNodesChange={handleNodesChange}
-                onPaneClick={() => {
+                onPaneClick={e => {
                   if (ignorePaneClick.current) {
                     ignorePaneClick.current = false
+
+                    return
+                  }
+
+                  if (e.metaKey || e.ctrlKey || e.shiftKey) {
+                    requestAdd({
+                      on: 'canvas',
+                      at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
+                    })
 
                     return
                   }
@@ -977,7 +1000,7 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
                   <div
                     className={cn(
                       composerDockCard('top'),
-                      'canvas-dock-transport mx-2 overflow-hidden rounded-b-none border-b-transparent'
+                      'canvas-dock-transport mx-2 overflow-visible rounded-b-none border-b-transparent'
                     )}
                   >
                     <Timeline p={player} />
@@ -998,6 +1021,7 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
             </CutEdgeProvider>
           </AddStepProvider>
         </FlowDirProvider>
+        </NodeLive.Provider>
       </div>
 
       {/* Last child of the page root, exactly where the Kanban board hangs its
@@ -1025,5 +1049,6 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
 
       {draft && <KindPicker at={draft.at} onClose={() => setDraft(null)} onPick={confirmAdd} />}
     </PageShell>
+    </RunNowProvider>
   )
 }

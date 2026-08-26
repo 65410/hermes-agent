@@ -92,6 +92,7 @@ export type EventType =
   | 'WaitStarted'
   | 'WaitResolved'
   | 'RunPaused'
+  | 'UserAsk'
 
 /** Types the canvas has to synthesize because the engine doesn't report them. */
 export const HERMES_EXT: ReadonlySet<EventType> = new Set<EventType>([
@@ -108,7 +109,8 @@ export const HERMES_EXT: ReadonlySet<EventType> = new Set<EventType>([
   // world gets its own two events rather than borrowing the person's.
   'WaitStarted',
   'WaitResolved',
-  'RunPaused'
+  'RunPaused',
+  'UserAsk'
 ])
 
 interface Envelope {
@@ -179,6 +181,7 @@ export type ProtoEvent =
       payload: { loopId: string; iteration: number; to: string; feedback: string }
     })
   | (Envelope & { type: 'TodoUpdated'; payload: NodeRef & { todos: TodoItem[] } })
+  | (Envelope & { type: 'UserAsk'; payload: NodeRef & { prompt: string } })
 
 // ---------------------------------------------------------------------------
 // Derived state — everything the canvas draws is a fold over the event stream.
@@ -328,6 +331,25 @@ export function checkpointsOf(events: ProtoEvent[]): Checkpoint[] {
   return out
 }
 
+/** The agent returned an exception string as if it were a summary. */
+export function isBrokenReply(text: string | null | undefined): boolean {
+  const raw = (text ?? '').trim().replace(/^["']|["']$/g, '')
+  if (!raw) {
+    return false
+  }
+
+  const low = raw.toLowerCase()
+  return (
+    raw.startsWith('HTTP 4') ||
+    raw.startsWith('HTTP 5') ||
+    low.includes('could not resolve authentication') ||
+    low.includes('api_key or auth_token') ||
+    low.includes('model parameter is required') ||
+    low.includes('requested model does not exist') ||
+    low.includes('could not load the agent')
+  )
+}
+
 /**
  * Fold `count` events into the world the canvas renders. Replaying a prefix is
  * the whole time-travel mechanism — there is no separate historical store.
@@ -436,7 +458,10 @@ export function reduceEvents(events: ProtoEvent[], shape: RunShape, count = even
           // The wire says "finished" whether the agent approved or rejected —
           // a FAIL is a value in its structured output, not a task error. The
           // canvas is what turns a rejecting validator red.
-          rt.status = rt.verdict === 'FAIL' ? 'failed' : 'done'
+          //
+          // A transport error returned as the reply (auth missing, HTTP 4xx)
+          // is not a verdict — treat it as the step breaking.
+          rt.status = rt.verdict === 'FAIL' || isBrokenReply(rt.summary) ? 'failed' : 'done'
           rt.currentTool = null
           rt.durationMs = rt.startedAt != null ? e.ts - rt.startedAt : null
         }
@@ -688,6 +713,9 @@ export function feedLine(e: ProtoEvent): FeedLine | null {
 
     case 'WaitResolved':
       return { ...base, step: e.payload.nodeId, kind: 'ok', msg: e.payload.by }
+
+    case 'UserAsk':
+      return { ...base, step: e.payload.nodeId, kind: 'data', msg: e.payload.prompt }
 
     default:
       return null

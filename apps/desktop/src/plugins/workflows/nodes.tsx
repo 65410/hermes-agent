@@ -1,12 +1,13 @@
-import { Codicon, GlyphSpinner, type SpinnerName } from '@hermes/plugin-sdk'
+import { Button, cn, Codicon, GlyphSpinner, PRIMARY_ICON_FACE, type SpinnerName } from '@hermes/plugin-sdk'
 import { Handle, type Node, type NodeProps, Position, type ReactFlowState, useStore, useUpdateNodeInternals } from '@xyflow/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 import { useFlowDir, usePorts } from './direction'
 import { armLabel } from './graph'
 import { KindMark, kindMarkOf } from './kind-mark'
 import type { FlowDir } from './layout'
-import { stepLink, type StepRuntime } from './protocol'
+import { useRunNow } from './player'
+import { isBrokenReply, stepLink, type StepRuntime } from './protocol'
 import { type Arm, NEW_BRANCH, type StepConfig, type StepDef, WAIT_KIND_OPTIONS } from './scenario'
 
 // React Flow's own API says "node" — NodeProps, nodeTypes, onNodesChange — so
@@ -23,11 +24,12 @@ export interface NodeData {
 }
 
 function fmtElapsed(ms: number) {
-  if (ms < 1000) {
-    return `${ms}ms`
+  const n = Math.max(0, Math.round(ms))
+  if (n < 1000) {
+    return `${n}ms`
   }
 
-  return `${(ms / 1000).toFixed(1)}s`
+  return `${(n / 1000).toFixed(1)}s`
 }
 
 function useElapsed(rt: StepRuntime, frozenAt?: number | null) {
@@ -64,7 +66,21 @@ export const KIND_LABEL: Record<string, string> = {
   agent: 'Agent',
   gate: 'Gate',
   human: 'Human',
-  wait: 'Wait'
+  wait: 'Wait',
+  trigger: 'Trigger'
+}
+
+/** The canvas cards read this, not React Flow's `data` prop. RF's NodeWrapper
+ *  bails out when its internal node object is reused, so a type or "starts on"
+ *  edit can land in the inspector (which reads `nodes` directly) and leave the
+ *  card showing the previous kind. This is that same array. */
+export const NodeLive = createContext<Node[]>([])
+
+function useLiveData(id: string, fallback: unknown): NodeData {
+  const nodes = useContext(NodeLive)
+  const mine = nodes.find(n => n.id === id)
+
+  return (mine?.data as NodeData | undefined) ?? (fallback as NodeData)
 }
 
 // React Flow measures a node's handles once and bakes the offsets into every
@@ -80,7 +96,7 @@ export const KIND_LABEL: Record<string, string> = {
 // exact here — it fires on every frame the height is interpolating and on
 // nothing else, so the edges track a growing card the same way they track a
 // lifting one, without anybody having to enumerate which state changes resize.
-function useCardGeometry(nodeId: string, raised: boolean) {
+function useCardGeometry(nodeId: string, raised: boolean, kind: string) {
   const update = useUpdateNodeInternals()
   const ref = useRef<HTMLDivElement>(null)
   const first = useRef(true)
@@ -89,7 +105,9 @@ function useCardGeometry(nodeId: string, raised: boolean) {
   // Which side a handle sits on is cached in React Flow's node internals, not
   // read from the DOM each render — so flipping the flow re-renders the card
   // with its ports on the other edge while every wire still leaves the old one.
-  useEffect(() => update(nodeId), [dir, nodeId, update])
+  // Kind is here too: trigger→agent swaps the play button for a body line and
+  // the card's height changes without RF remounting the wrapper.
+  useEffect(() => update(nodeId), [dir, kind, nodeId, update])
 
   // eslint-disable-next-line no-restricted-syntax -- `first` is a mount flag, not a mirrored atom.
   useEffect(() => {
@@ -333,13 +351,44 @@ function NodeMeta({ rt, config, elapsed }: { rt: StepRuntime; config: StepConfig
 // lit it on all four cards in the loop body at once, every one of them reading
 // "take 2" — because the iteration belongs to the loop, not to the steps it
 // sweeps up.
-function NodeHead({ def, config, rt }: { def: StepDef; config: StepConfig; rt: StepRuntime }) {
+function NodeHead({
+  def,
+  config,
+  rt,
+  play
+}: {
+  def: StepDef
+  config: StepConfig
+  rt: StepRuntime
+  play?: boolean
+}) {
   return (
     <div className="node-head">
       <KindMark kind={kindMarkOf(def)} title={KIND_LABEL[def.kind]} />
       <div className="node-name">{config.title}</div>
-      {rt.status !== 'idle' && <StatusSeal status={rt.status} />}
+      {play ? <ManualPlay /> : rt.status !== 'idle' && <StatusSeal status={rt.status} />}
     </div>
+  )
+}
+
+function ManualPlay() {
+  const run = useRunNow()
+
+  return (
+    <Button
+      className={cn(PRIMARY_ICON_FACE, 'node-play nodrag nopan')}
+      disabled={run.running}
+      onClick={e => {
+        e.stopPropagation()
+        run.start()
+      }}
+      onMouseDown={e => e.stopPropagation()}
+      size="icon-2xs"
+      title={run.running ? 'Already running' : 'Run this workflow'}
+      type="button"
+    >
+      <Codicon name="triangle-right" />
+    </Button>
   )
 }
 
@@ -372,11 +421,17 @@ const DIFF_STAT = /([+−-]\d+)/
 // payload, drives the seal and the ring, and the Data tab still prints it whole.
 const VERDICT_LEAD = /^(?:group\s+)?(?:PASS|FAIL)\s*(?:·|→)\s*/
 
+function unwrapSummary(text: string) {
+  const trimmed = text.replace(VERDICT_LEAD, '').trim()
+  return trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+    ? trimmed.slice(1, -1)
+    : trimmed
+}
+
 function Summary({ text }: { text: string }) {
   return (
     <>
-      {text
-        .replace(VERDICT_LEAD, '')
+      {unwrapSummary(text)
         .split(DIFF_STAT)
         .map((part, i) =>
           i % 2 === 1 ? (
@@ -419,6 +474,7 @@ function NodeBody({ def, rt }: { def: StepDef; rt: StepRuntime }) {
   const link = live || waiting ? null : stepLink(rt.output)
   // A live step keeps the block even with nothing printed yet: the progress
   // track is the line in that case.
+  const failed = rt.status === 'failed' || isBrokenReply(rt.summary)
   const open = live || waiting || Boolean(tool) || Boolean(rt.summary) || Boolean(link)
 
   // One line element in all three states, rather than three that swap. It has
@@ -477,7 +533,7 @@ function NodeBody({ def, rt }: { def: StepDef; rt: StepRuntime }) {
         <span className="shimmer">{def.doing ?? 'Working'}</span>
       </div>
       <div
-        className={`logline${line ? ' open' : ''}${ticking ? ' toolline' : ''}`}
+        className={`logline${line ? ' open' : ''}${ticking ? ' toolline' : ''}${failed && line ? ' is-fail' : ''}`}
         title={tool ? `${tool.name} ${tool.arg}` : (rt.summary ?? undefined)}
       >
         {line}
@@ -514,9 +570,9 @@ function BackPort({ id }: { id: string }) {
   )
 }
 
-/** Everything the card shell's outer div carries. Both node components render
- *  the same div, and a hook added to one and not the other is a bug that only
- *  shows on one kind of card — so it goes here, not at the call sites.
+/** Everything the card shell's outer div carries. The one step card renders
+ *  this, so a hook that belongs on every kind can't be added to only one
+ *  branch of the kind switch.
  *
  *  `data-tour` is the step's addressable handle. The tour engine's target
  *  scanner treats `data-tour` as the one selector durable enough to survive a
@@ -532,41 +588,11 @@ const cardProps = (id: string, def: StepDef, dir: FlowDir, rt: StepRuntime, sele
   'data-tour': `step:${id}`
 })
 
-// ---- Worker node (agent or human) --------------------------------------------
-export function AgentNode({ id, data }: NodeProps) {
-  const { def, config, rt, selected, frozenAt } = data as unknown as NodeData
-  const elapsed = useElapsed(rt, frozenAt)
-  const dir = useFlowDir()
-  const ports = usePorts()
-
-  // Must match the CSS raised set exactly, or the edges re-measure at the
-  // wrong moments.
-  const ref = useCardGeometry(
-    id,
-    !!selected || rt.status === 'running' || rt.status === 'looping' || rt.status === 'waiting'
-  )
-
-  return (
-    <div {...cardProps(id, def, dir, rt, selected)} ref={ref}>
-      {/* Every step carries the full set. These used to be conditional on two
-          hardcoded seed ids — the first step had no input and the last had no
-          output — so the head of the flow could never be fed and nothing could
-          ever be wired after the tail. Which step is first or last is a fact
-          about the wiring, not about the card, and the card was enforcing it. */}
-      <Handle id="in" position={ports.target} type="target" />
-      <BackPort id={id} />
-
-      <NodeArc status={rt.status} />
-      <NodeHead config={config} def={def} rt={rt} />
-
-      <NodeBody def={def} rt={rt} />
-
-      <NodeMeta config={config} elapsed={elapsed} rt={rt} />
-
-      <Handle id="out" position={ports.source} type="source" />
-    </div>
-  )
-}
+// ---- Step card ---------------------------------------------------------------
+// One component for every kind. React Flow keys wrappers by node id, not type,
+// so switching Type in the inspector used to leave the previous card mounted
+// (a trigger still showing Play after it became an agent). Kind is data; the
+// card branches on it.
 
 /** The gate's outputs, one row per outgoing wire.
  *
@@ -629,41 +655,52 @@ function GatePorts({ id, arms }: { id: string; arms: Arm[] }) {
   )
 }
 
-// ---- Gate node ---------------------------------------------------------------
-export function GateNode({ id, data }: NodeProps) {
-  const { def, config, rt, selected, frozenAt } = data as unknown as NodeData
+export function StepNode({ id, data }: NodeProps) {
+  const { def, config, rt, selected, frozenAt } = useLiveData(id, data)
   const elapsed = useElapsed(rt, frozenAt)
-  const ref = useCardGeometry(id, !!selected || rt.status === 'running' || rt.status === 'looping')
   const dir = useFlowDir()
   const ports = usePorts()
+  const worker = def.kind === 'agent' || def.kind === 'human'
+  const play = def.kind === 'trigger' && (config.on?.type ?? 'manual') === 'manual' && rt.status === 'idle'
+
+  // Must match the CSS raised set exactly, or the edges re-measure at the
+  // wrong moments. Waiting lifts a worker (the run is parked on someone) and
+  // not a gate (a gate doesn't wait on a person).
+  const ref = useCardGeometry(
+    id,
+    !!selected || rt.status === 'running' || rt.status === 'looping' || (worker && rt.status === 'waiting'),
+    def.kind
+  )
 
   return (
     <div {...cardProps(id, def, dir, rt, selected)} ref={ref}>
+      {/* Every step carries the full set. These used to be conditional on two
+          hardcoded seed ids — the first step had no input and the last had no
+          output — so the head of the flow could never be fed and nothing could
+          ever be wired after the tail. Which step is first or last is a fact
+          about the wiring, not about the card, and the card was enforcing it. */}
       <Handle id="in" position={ports.target} type="target" />
       <BackPort id={id} />
+
       <NodeArc status={rt.status} />
-      <NodeHead config={config} def={def} rt={rt} />
+      <NodeHead config={config} def={def} play={play} rt={rt} />
       <NodeBody def={def} rt={rt} />
       <NodeMeta config={config} elapsed={elapsed} rt={rt} />
       {def.kind === 'gate' ? (
         <GatePorts arms={config.arms ?? []} id={id} />
       ) : (
-        // A wait step doesn't branch — one wire out, like a worker.
         <Handle id="out" position={ports.source} type="source" />
       )}
     </div>
   )
 }
 
-// Workers share one card — a human step IS an agent card whose brain is a
-// person (same contract: prompt in, structured output out). Wait and trigger
-// share the gate's shape: a control step that routes without spending.
 export const nodeTypes = {
-  agent: AgentNode,
-  human: AgentNode,
-  gate: GateNode,
-  wait: GateNode,
-  trigger: GateNode,
+  agent: StepNode,
+  human: StepNode,
+  gate: StepNode,
+  wait: StepNode,
+  trigger: StepNode,
   note: NoteNode
 }
 

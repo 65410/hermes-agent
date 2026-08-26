@@ -24,7 +24,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import { $workflows, bindWorkflowSession } from './documents'
+import { $workflows, bindWorkflowSession, type WorkflowDoc } from './documents'
 
 const TITLE = 'Workflows'
 
@@ -57,7 +57,11 @@ async function mintSession(title: string): Promise<string> {
     // The gate on the `workflow` tool. See the module note.
     source: 'desktop',
     // Plumbing, not a conversation the user started.
-    hidden: true
+    hidden: true,
+    // Write the row now. session.create is lazy by default (no "Untitled"
+    // drafts), but this id is stored on the workflow — a refresh that
+    // can't resume it paints "session not found" over the dock.
+    persist: true
   })
 
   // The STORED id is the durable one — a runtime is reaped whenever its
@@ -116,4 +120,30 @@ export function ensureCanvasSession(workflowId: string): Promise<string> {
   creating.set(workflowId, work)
 
   return work
+}
+
+/** A workflow is born with its conversation. Mint anything that landed
+ *  without one (older docs, or a create that hasn't finished yet) so the
+ *  canvas never has a "loading the session" state. */
+export function watchCanvasSessions(): () => void {
+  const kick = (docs: WorkflowDoc[]) => {
+    for (const doc of docs) {
+      if (!doc.sessionId) {
+        void ensureCanvasSession(doc.id)
+      }
+    }
+  }
+
+  kick($workflows.get())
+
+  return $workflows.listen(kick)
+}
+
+/** The stored id is gone (Cmd+R reaped a never-persisted draft). Mint another
+ *  and bind it — the canvas does not get a "couldn't open" state. */
+export function replaceCanvasSession(workflowId: string): Promise<string> {
+  bindWorkflowSession(workflowId, '')
+  creating.delete(workflowId)
+
+  return ensureCanvasSession(workflowId)
 }

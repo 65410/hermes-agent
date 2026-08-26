@@ -35,7 +35,7 @@ import {
 import { bindBridge } from './bridge'
 import { bindDocuments } from './documents'
 import WorkflowsPage from './page'
-import { bindCanvasSession } from './session'
+import { bindCanvasSession, watchCanvasSessions } from './session'
 
 const PATH = '/workflows'
 
@@ -45,10 +45,13 @@ const plugin: HermesPlugin = {
   description: 'Node canvas for agent scenarios — author a graph of steps, gates and approvals, then run it.',
   defaultEnabled: false,
   register(ctx) {
-    ctx.onDispose(bindDocuments(ctx.storage))
-    // The canvas conversation outlives any one visit to the page, so its id is
-    // remembered here rather than minted on mount.
+    // Storage first — mint reads the legacy key from here.
     bindCanvasSession(ctx.storage)
+    ctx.onDispose(bindDocuments(ctx.storage))
+    // A workflow and its conversation are the same object. Mint on create
+    // (and for older docs that never had one) so opening the canvas is not
+    // a loading state.
+    ctx.onDispose(watchCanvasSessions())
     // Bound at register, not at mount: the `workflow` tool addresses the
     // user's workflows, not their current page, so Hermes can read and edit
     // them from any chat without the canvas being on screen.

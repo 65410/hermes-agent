@@ -3,13 +3,69 @@
 // fewer events — the run itself is not rewound.
 
 import { host } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
+import { $workflows, noteRun } from './documents'
 import type { RunPlan } from './graph'
 import { type Checkpoint, checkpointsOf, type ProtoEvent, reduceEvents, type RunShape, type World } from './protocol'
 import type { OnFail } from './scenario'
+import { demandComplete } from './validation'
+
+/** Play from a manual trigger card or the inspector — same start as the dock. */
+export interface RunNow {
+  start: () => void
+  fireWebhook: () => Promise<void>
+  running: boolean
+}
+
+const RunNowCtx = createContext<RunNow>({
+  start: () => {},
+  fireWebhook: async () => {},
+  running: false
+})
+export const RunNowProvider = RunNowCtx.Provider
+export const useRunNow = () => useContext(RunNowCtx)
 
 const LIVE: ReadonlySet<string> = new Set(['running', 'paused', 'waiting_human', 'waiting_world'])
+
+function sameEvent(a: ProtoEvent, b: ProtoEvent) {
+  return a.runId === b.runId && a.seq === b.seq && a.type === b.type && a.ts === b.ts
+}
+
+function runIsFinished(events: ProtoEvent[]) {
+  return events.some(e => e.type === 'RunFinished')
+}
+
+/** Hermes asks in the canvas thread — missing model, a 404, something the
+ *  step cannot invent. Hidden so it isn't typed as a user bubble. */
+function askInCanvas(workflowId: string, nodeId: string, prompt: string): void {
+  const stored = $workflows.get().find(d => d.id === workflowId)?.sessionId
+
+  if (!stored) {
+    return
+  }
+
+  void host
+    .request<{ session_id?: string }>('session.resume', { session_id: stored })
+    .then(res => {
+      const sid = res.session_id
+
+      if (!sid) {
+        return
+      }
+
+      return host.request('prompt.submit', {
+        display_kind: 'hidden',
+        session_id: sid,
+        text:
+          `The "${nodeId}" step on this workflow could not run:\n\n${prompt}\n\n` +
+          'Explain that in this thread. If something is missing or confusing ' +
+          '(a model, a Figma board, credentials, a path), ask me — use clarify ' +
+          'for a short choice list. Do not pretend the step succeeded.'
+      })
+    })
+    .catch(() => {})
+}
 
 /** none → (pause requested) pausing → (boundary reached) paused → resume. */
 export type PauseState = 'none' | 'pausing' | 'paused'
@@ -77,7 +133,10 @@ export interface Player {
   /** Event timestamp the view is frozen at, or null while live. */
   frozenAt: number | null
   start: () => void
+  fireWebhook: () => Promise<void>
   reset: () => void
+  /** Cancel a live run (or a stuck one) and start again. */
+  restart: () => void
   /** Suspend at the next safe point — before the next step dispatch. */
   requestPause: () => void
   resume: () => void
@@ -110,6 +169,8 @@ export function usePlayer(planOf: () => RunPlan): Player {
   const askingRef = useRef<Question | null>(null)
   const [deferred, setDeferred] = useState(false)
   const liveRun = useRef<string | null>(null)
+  const planOfRef = useRef(planOf)
+  planOfRef.current = planOf
 
   const setPause = (s: PauseState) => {
     pauseRef.current = s
@@ -128,6 +189,10 @@ export function usePlayer(planOf: () => RunPlan): Player {
     liveRun.current = runId
     runIdRef.current = runId
     setEvents(incoming)
+    if (runIsFinished(incoming)) {
+      setRunning(false)
+      setPause('none')
+    }
     const waiting = [...incoming].reverse().find(e => e.type === 'HumanWaiting')
     const answered = waiting
       ? incoming.some(e => e.type === 'HumanResponded' && e.payload.nodeId === waiting.payload.nodeId && e.seq > waiting.seq)
@@ -135,7 +200,27 @@ export function usePlayer(planOf: () => RunPlan): Player {
     ask(!answered && waiting?.type === 'HumanWaiting' ? waiting.payload : null)
   }, [])
 
+  const adoptRun = useCallback(
+    async (runId: string, workflowId: string) => {
+      liveRun.current = runId
+      runIdRef.current = runId
+      noteRun(workflowId)
+      const snap = await host.request<{ events?: ProtoEvent[] }>('workflow.run.events', {
+        runId,
+        after: -1
+      })
+      if (liveRun.current === runId) {
+        adoptLive(runId, snap.events ?? [])
+      }
+    },
+    [adoptLive]
+  )
+
   const start = useCallback(() => {
+    // Every way to run funnels through here — the transport, Space, a trigger
+    // card, the agent's `run_control` — so it's the one place that can tell the
+    // inspector the draft was declared finished. See validation.ts.
+    demandComplete()
     const plan = planOf()
     setShape(shapeOf(plan))
     setPause('none')
@@ -156,22 +241,40 @@ export function usePlayer(planOf: () => RunPlan): Player {
         scenario: plan.scenario,
         source: 'manual'
       })
-      .then(async res => {
-        liveRun.current = res.runId
-        runIdRef.current = res.runId
-        const snap = await host.request<{ events?: ProtoEvent[] }>('workflow.run.events', {
-          runId: res.runId,
-          after: -1
-        })
-        if (liveRun.current === res.runId) {
-          adoptLive(res.runId, snap.events ?? [])
-        }
-      })
+      .then(res => adoptRun(res.runId, plan.id))
       .catch(() => {
         liveRun.current = null
         setRunning(false)
       })
-  }, [adoptLive, planOf])
+  }, [adoptRun, planOf])
+
+  const fireWebhook = useCallback(async () => {
+    const plan = planOf()
+    if (!plan.id) {
+      throw new Error('No workflow to fire')
+    }
+
+    setShape(shapeOf(plan))
+    setPause('none')
+    ask(null)
+    setEvents([])
+    setHead(null)
+    setRunning(true)
+
+    try {
+      const res = await host.request<{ runId: string }>('workflow.run.start', {
+        workflowId: plan.id,
+        scenario: plan.scenario,
+        payload: { ok: true },
+        source: 'webhook'
+      })
+      await adoptRun(res.runId, plan.id)
+    } catch (err) {
+      liveRun.current = null
+      setRunning(false)
+      throw err
+    }
+  }, [adoptRun, planOf])
 
   const reset = useCallback(() => {
     const id = liveRun.current
@@ -185,6 +288,21 @@ export function usePlayer(planOf: () => RunPlan): Player {
     setHead(null)
     setRunning(false)
   }, [])
+
+  const restart = useCallback(() => {
+    const id = liveRun.current
+    liveRun.current = null
+    setPause('none')
+    ask(null)
+    setEvents([])
+    setHead(null)
+    const kick = () => start()
+    if (id) {
+      void host.request('workflow.run.cancel', { runId: id }).then(kick, kick)
+    } else {
+      kick()
+    }
+  }, [start])
 
   const respond = useCallback((decision: 'approved' | 'denied') => {
     const q = askingRef.current
@@ -209,8 +327,22 @@ export function usePlayer(planOf: () => RunPlan): Player {
       return
     }
 
+    const id = liveRun.current
     setPause('pausing')
-    void host.request('workflow.run.pause', { runId: liveRun.current }).catch(() => {})
+    void host
+      .request<{ status?: string }>('workflow.run.pause', { runId: id })
+      .then(res => {
+        if (res.status === 'paused') {
+          setPause('paused')
+          return
+        }
+
+        if (!res.status || !LIVE.has(res.status)) {
+          setPause('none')
+          setRunning(false)
+        }
+      })
+      .catch(() => setPause('none'))
   }, [])
 
   const resume = useCallback(() => {
@@ -235,13 +367,12 @@ export function usePlayer(planOf: () => RunPlan): Player {
     }
 
     if (liveRun.current && pauseRef.current === 'none') {
-      setPause('pausing')
-      void host.request('workflow.run.pause', { runId: liveRun.current }).catch(() => {})
+      requestPause()
     }
 
     headRef.current = clamped
     setHead(clamped)
-  }, [])
+  }, [requestPause])
 
   const goLive = useCallback(() => {
     setHead(null)
@@ -294,10 +425,14 @@ export function usePlayer(planOf: () => RunPlan): Player {
         return
       }
 
-      setEvents(prev => (prev.some(e => e.seq === incoming.seq) ? prev : [...prev, incoming]))
+      setEvents(prev => (prev.some(e => sameEvent(e, incoming)) ? prev : [...prev, incoming]))
 
       if (incoming.type === 'HumanWaiting') {
         ask(incoming.payload)
+      }
+
+      if (incoming.type === 'UserAsk') {
+        askInCanvas(planOfRef.current().id, incoming.payload.nodeId, incoming.payload.prompt)
       }
 
       if (incoming.type === 'HumanResponded' && askingRef.current?.nodeId === incoming.payload.nodeId) {
@@ -361,7 +496,9 @@ export function usePlayer(planOf: () => RunPlan): Player {
     respond,
     frozenAt: head == null ? null : (events[effHead - 1]?.ts ?? null),
     start,
+    fireWebhook,
     reset,
+    restart,
     requestPause,
     resume,
     seek,

@@ -8,8 +8,8 @@
 //                 markers between segments of a run. Dense, informational.
 //   checkpoints — the durable stops the ⏮/⏭ buttons jump between.
 
-import { Button, cn, Codicon, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from '@hermes/plugin-sdk'
-import { useCallback, useMemo, useRef } from 'react'
+import { Button, cn, Codicon, GHOST_ICON_BTN, PRIMARY_ICON_FACE } from '@hermes/plugin-sdk'
+import { useCallback, useMemo, useRef, useState, type PointerEvent } from 'react'
 
 import type { Player } from './player'
 import type { ProtoEvent, Verdict } from './protocol'
@@ -73,33 +73,106 @@ function buildSplits(events: ProtoEvent[]): (Split | null)[] {
   })
 }
 
+/** Spotify-style elapsed on a track: `0:07`, `1:23`, `1:02:03`. */
+function fmtScrub(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function elapsedAt(events: ProtoEvent[], head: number): number {
+  const origin = events[0]?.ts
+
+  if (origin == null || head <= 0) {
+    return 0
+  }
+
+  return Math.max(0, (events[Math.min(head, events.length) - 1]?.ts ?? origin) - origin)
+}
+
+interface Scrub {
+  ratio: number
+  head: number
+}
+
 export function Timeline({ p }: { p: Player }) {
   const trackRef = useRef<HTMLDivElement>(null)
+  const dragging = useRef(false)
+  const [scrub, setScrub] = useState<Scrub | null>(null)
   const total = p.events.length
 
-  const seekTo = useCallback(
-    (clientX: number) => {
+  const atClientX = useCallback(
+    (clientX: number): Scrub | null => {
       const el = trackRef.current
 
       if (!el || total === 0) {
-        return
+        return null
       }
 
       const box = el.getBoundingClientRect()
-      const ratio = (clientX - box.left) / box.width
-      p.seek(Math.round(Math.max(0, Math.min(1, ratio)) * total))
+      const ratio = Math.max(0, Math.min(1, (clientX - box.left) / box.width))
+
+      return { ratio, head: Math.round(ratio * total) }
     },
-    [p, total]
+    [total]
   )
 
-  const onPointerDown = (e: React.PointerEvent) => {
+  const seekTo = useCallback(
+    (head: number) => {
+      p.seek(head)
+    },
+    [p]
+  )
+
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    // React Flow owns the pane under this dock; if the press leaks, a scrub
+    // becomes a canvas pan and the playhead never moves.
+    e.stopPropagation()
+    e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
-    seekTo(e.clientX)
+    dragging.current = true
+    const at = atClientX(e.clientX)
+
+    if (at) {
+      setScrub(at)
+      seekTo(at.head)
+    }
   }
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (e.buttons === 1) {
-      seekTo(e.clientX)
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    const at = atClientX(e.clientX)
+
+    if (!at) {
+      return
+    }
+
+    setScrub(at)
+
+    if (dragging.current || e.buttons === 1) {
+      seekTo(at.head)
+    }
+  }
+
+  const onPointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    dragging.current = false
+
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      // Capture already released.
+    }
+  }
+
+  const onPointerLeave = () => {
+    if (!dragging.current) {
+      setScrub(null)
     }
   }
 
@@ -109,6 +182,13 @@ export function Timeline({ p }: { p: Player }) {
   const armed = total > 0
   const paused = p.pauseState === 'paused'
   const pausing = p.pauseState === 'pausing'
+  const tipHead = scrub?.head ?? p.head
+  const tipPct = scrub ? scrub.ratio * 100 : pct
+  const tipLabel = armed
+    ? [fmtScrub(elapsedAt(p.events, tipHead)), splits[Math.max(0, tipHead - 1)]?.label]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
 
   // Run control, not a view control: play starts or resumes the scenario;
   // pause suspends it when available — in-flight steps finish, the next one
@@ -134,22 +214,22 @@ export function Timeline({ p }: { p: Player }) {
   return (
     <div className="tl">
       <Button
-        className={cn(PRIMARY_ICON_BTN, pausing && 'animate-pulse')}
+        className={cn(PRIMARY_ICON_FACE, pausing && 'animate-pulse')}
         disabled={!runBtn.act}
         onClick={runBtn.act}
-        size="icon"
+        size="icon-2xs"
         title={runBtn.title}
       >
         {/* `triangle-right` is the only genuinely solid play in the set — both
             `play` and `debug-start` draw an outline around the triangle, which
             on the filled primary circle reads as a disabled ring. This matches
             the solid bars of the `debug-pause` it swaps with. */}
-        <Codicon name={runBtn.pause ? 'debug-pause' : 'triangle-right'} size="1rem" />
+        <Codicon name={runBtn.pause ? 'debug-pause' : 'triangle-right'} />
       </Button>
       <Button
         className={GHOST_ICON_BTN}
         disabled={!armed}
-        onClick={p.start}
+        onClick={p.restart}
         size="icon"
         title="Restart run"
         variant="ghost"
@@ -181,9 +261,12 @@ export function Timeline({ p }: { p: Player }) {
       </Button>
 
       <div
-        className={`tl-track${armed ? '' : ' empty'}`}
+        className={`tl-track nodrag nopan nowheel${armed ? '' : ' empty'}`}
+        onPointerCancel={onPointerUp}
         onPointerDown={armed ? onPointerDown : undefined}
+        onPointerLeave={onPointerLeave}
         onPointerMove={armed ? onPointerMove : undefined}
+        onPointerUp={onPointerUp}
         ref={trackRef}
       >
         <div className={`tl-fill${p.live ? '' : ' hist'}`} style={{ width: `${pct}%` }} />
@@ -192,7 +275,6 @@ export function Timeline({ p }: { p: Player }) {
             className="tl-tick"
             key={c.no}
             style={{ left: `${total ? ((c.at + 1) / total) * 100 : 0}%` }}
-            title={`checkpoint ${c.no} · ${c.label}`}
           />
         ))}
         {splits.map((s, i) =>
@@ -201,11 +283,15 @@ export function Timeline({ p }: { p: Player }) {
               className={`tl-mark m-${s.kind}`}
               key={i}
               style={{ left: `${total ? ((i + 1) / total) * 100 : 0}%` }}
-              title={s.label}
             />
           ) : null
         )}
         <span className="tl-headline" style={{ left: `${pct}%` }} />
+        {scrub && tipLabel && (
+          <span className="tl-tip" style={{ left: `${tipPct}%` }}>
+            {tipLabel}
+          </span>
+        )}
       </div>
     </div>
   )

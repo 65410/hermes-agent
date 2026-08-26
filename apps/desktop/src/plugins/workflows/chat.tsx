@@ -18,31 +18,26 @@
  * when the chat gains a feature, this gains it too.
  */
 
-import { Codicon, SessionChat } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { Codicon, SessionChat, useValue } from '@hermes/plugin-sdk'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { ensureCanvasSession } from './session'
-
-/** How much of the pane the conversation may take before it scrolls. The
- *  transport and composer ride under the band, so the whole dock tops out
- *  around 40% of the viewport — the canvas stays the protagonist. */
-const BAND_MAX_FRACTION = 0.28
-
-/** Breathing room under the last row, so text doesn't sit on the seam. */
-const BAND_PAD_PX = 10
+import { $workflows } from './documents'
+import { ensureCanvasSession, replaceCanvasSession } from './session'
 
 /**
- * Size the transcript band to its contents, the way HUD mode does.
+ * Measure the furniture the band is positioned against.
  *
  * The chat is built to fill a pane: its scroll container is `min-height: 100%`,
  * so in a dock it either fills everything it is given or collapses to nothing,
- * and neither is a band. HUD hit this first and solved it by measuring — the
- * tight bbox of the message rows, not the viewport, which is the whole trick
- * (measuring the viewport counts the full-height scroll container and paints an
- * empty slab). The measurement drives CSS vars and the stylesheet does the rest.
+ * and neither is a band. So the band is an absolutely-positioned box, and it
+ * needs to know how tall the bar and transport under it are to sit on their
+ * top edge.
  *
- * Same two numbers here: how tall the conversation is, and how tall the bar
- * under it is, since the band is positioned off the bar's top edge.
+ * Its HEIGHT is not measured. That was HUD's trick — size the band to the tight
+ * bbox of the rows — and in a dock it means the transcript's ceiling moves with
+ * whatever is in it, so a short exchange gets a tiny box. The stylesheet owns
+ * one height now; the only thing measured here is whether there are turns at
+ * all, because a session with none should show no sheet.
  */
 function useBandMetrics(root: React.RefObject<HTMLDivElement | null>) {
   useEffect(() => {
@@ -72,19 +67,18 @@ function useBandMetrics(root: React.RefObject<HTMLDivElement | null>) {
 
       // Turns only. The content box always has furniture — titlebar pad,
       // composer clearance, the empty-state grid (h-full + py-8) — and
-      // measuring those is how a brand-new session grew a blank sheet the
+      // counting those is how a brand-new session grew a blank sheet the
       // size of the band the moment the composer took focus.
       const turns = Array.from(
         viewport?.querySelectorAll<HTMLElement>(
           '[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-root"]'
         ) ?? []
-      ).filter(row => row.getBoundingClientRect().height > 0)
+      )
 
-      const span = !turns.length
-        ? 0
-        : Math.max(0, turns[turns.length - 1].getBoundingClientRect().bottom - turns[0].getBoundingClientRect().top)
-
-      el.toggleAttribute('data-canvas-thread', span > 0)
+      el.toggleAttribute(
+        'data-canvas-thread',
+        turns.some(row => row.getBoundingClientRect().height > 0)
+      )
 
       const bar = el.querySelector<HTMLElement>('[data-slot="composer-dock"]')
 
@@ -102,36 +96,52 @@ function useBandMetrics(root: React.RefObject<HTMLDivElement | null>) {
         ro.observe(transport)
         el.style.setProperty('--canvas-transport-height', `${Math.round(transport.getBoundingClientRect().height)}px`)
       }
-
-      el.style.setProperty(
-        '--canvas-band-height',
-        `${span < 1 ? 0 : Math.round(Math.min(span + BAND_PAD_PX, window.innerHeight * BAND_MAX_FRACTION))}px`
-      )
     }
 
     // The chat surface mounts async, so poll until the viewport exists and let
-    // the observer take it from there. Window resize is separate: the rows may
-    // not change, but the ceiling they're capped against does.
+    // the observer take it from there.
     measure()
     const probe = window.setInterval(measure, 500)
-    window.addEventListener('resize', measure)
 
     return () => {
       window.clearInterval(probe)
-      window.removeEventListener('resize', measure)
       ro.disconnect()
     }
   }, [root])
 }
 
 export function CanvasChat({ autofocus, workflowId }: { autofocus?: boolean; workflowId: string }) {
-  const [session, setSession] = useState('')
+  const bound = useValue($workflows).find(d => d.id === workflowId)?.sessionId ?? ''
+  const [session, setSession] = useState(bound)
   const [error, setError] = useState('')
   const root = useRef<HTMLDivElement>(null)
 
   useBandMetrics(root)
 
+  const replacing = useRef(false)
+  const remint = useCallback(() => {
+    if (replacing.current) {
+      return
+    }
+
+    replacing.current = true
+    setSession('')
+    void replaceCanvasSession(workflowId)
+      .then(id => setSession(id))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => {
+        replacing.current = false
+      })
+  }, [workflowId])
+
   useEffect(() => {
+    if (bound) {
+      setSession(bound)
+      setError('')
+
+      return
+    }
+
     let live = true
 
     ensureCanvasSession(workflowId)
@@ -141,7 +151,7 @@ export function CanvasChat({ autofocus, workflowId }: { autofocus?: boolean; wor
     return () => {
       live = false
     }
-  }, [workflowId])
+  }, [bound, workflowId])
 
   useEffect(() => {
     if (!autofocus || !session) {
@@ -176,11 +186,9 @@ export function CanvasChat({ autofocus, workflowId }: { autofocus?: boolean; wor
 
   return (
     <div className="canvas-chat" data-canvas-chat="" ref={root}>
-      {/* The band's backing, on a layer of its own so the chat surface doesn't
-          have to know it's floating over a graph. First child, so it paints
-          behind the transcript. */}
-      <div aria-hidden className="canvas-chat-sheet" />
-      {session ? <SessionChat storedSessionId={session} /> : null}
+      {/* A session that vanished under us and an explicit `/new` want the same
+          thing: mint a fresh one and stay on the canvas. */}
+      {session ? <SessionChat onMissing={remint} onNew={remint} storedSessionId={session} /> : null}
     </div>
   )
 }

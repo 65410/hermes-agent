@@ -15,7 +15,7 @@
 
 import { atom, host } from '@hermes/plugin-sdk'
 
-import type { Scenario } from './scenario'
+import { type Scenario, scrubScenario } from './scenario'
 
 export interface WorkflowDoc {
   id: string
@@ -32,8 +32,17 @@ export const $workflows = atom<WorkflowDoc[]>([])
 /** The open one. `null` when there are none, which is the empty state. */
 export const $currentId = atom<string | null>(null)
 
-/** HMAC + route for webhook-triggered workflows, from the gateway store. */
-export const $webhooks = atom<Record<string, { route: string; secret: string }>>({})
+/** The n8n-shaped hook: a URL you can point at, plus the HMAC if the sender signs. */
+export const $webhooks = atom<Record<string, { route: string; secret: string; url: string }>>({})
+
+/** How many times each workflow has been run. Hydrated from the store, bumped
+ *  when Play starts one. The switcher shows this, not the step count. */
+export const $runCounts = atom<Record<string, number>>({})
+
+export function noteRun(workflowId: string) {
+  const cur = $runCounts.get()
+  $runCounts.set({ ...cur, [workflowId]: (cur[workflowId] ?? 0) + 1 })
+}
 
 const DOCS_KEY = 'documents'
 const CURRENT_KEY = 'currentId'
@@ -56,9 +65,15 @@ function mintId(name: string, taken: WorkflowDoc[]): string {
   return id
 }
 
+function scrubDoc(doc: WorkflowDoc): WorkflowDoc {
+  const scenario = scrubScenario(doc.scenario)
+
+  return scenario === doc.scenario ? doc : { ...doc, scenario }
+}
+
 export function createWorkflow(name: string, scenario: Scenario): string {
   const docs = $workflows.get()
-  const doc: WorkflowDoc = { id: mintId(name, docs), name, scenario }
+  const doc: WorkflowDoc = { id: mintId(name, docs), name, scenario: scrubScenario(scenario) }
 
   $workflows.set([...docs, doc])
   $currentId.set(doc.id)
@@ -111,17 +126,15 @@ export interface DocStorage {
 function persistRemote(docs: WorkflowDoc[], currentId: string | null): void {
   void host
     .request<{
-      triggers?: { webhooks?: Record<string, string> }
+      triggers?: { webhooks?: Record<string, { route: string; secret: string; url: string }> }
     }>('workflow.store.put', { docs, currentId })
     .then(res => {
-      const secrets = res.triggers?.webhooks
-      if (!secrets) {
+      const hooks = res.triggers?.webhooks
+      if (!hooks) {
         return
       }
 
-      $webhooks.set(
-        Object.fromEntries(Object.entries(secrets).map(([id, secret]) => [id, { route: `wf:${id}`, secret }]))
-      )
+      $webhooks.set(hooks)
     })
     .catch(() => {
       // Local cache still holds — a downed socket must not block a drag.
@@ -129,7 +142,7 @@ function persistRemote(docs: WorkflowDoc[], currentId: string | null): void {
 }
 
 export function bindDocuments(storage: DocStorage): () => void {
-  $workflows.set(storage.get<WorkflowDoc[]>(DOCS_KEY, []))
+  $workflows.set(storage.get<WorkflowDoc[]>(DOCS_KEY, []).map(scrubDoc))
   $currentId.set(storage.get<string | null>(CURRENT_KEY, null))
 
   let timer = 0
@@ -141,7 +154,8 @@ export function bindDocuments(storage: DocStorage): () => void {
     .request<{
       docs: WorkflowDoc[]
       currentId: string | null
-      webhooks?: Record<string, { route: string; secret: string }>
+      webhooks?: Record<string, { route: string; secret: string; url: string }>
+      runs?: Record<string, number>
     }>('workflow.store.list')
     .then(remote => {
       const dirty = $workflows.get() !== initialDocs || $currentId.get() !== initialId
@@ -155,8 +169,12 @@ export function bindDocuments(storage: DocStorage): () => void {
         $webhooks.set(remote.webhooks)
       }
 
+      if (remote.runs) {
+        $runCounts.set(remote.runs)
+      }
+
       if (remote.docs?.length) {
-        $workflows.set(remote.docs)
+        $workflows.set(remote.docs.map(scrubDoc))
         if (remote.currentId) {
           $currentId.set(remote.currentId)
         }

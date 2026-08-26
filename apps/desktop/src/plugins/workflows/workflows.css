@@ -925,7 +925,8 @@
      the whole message, which is also what keeps it legible to anyone who can't
      read green-vs-red. The failed seal is the only one with a fill behind it —
      the same rule as the ring: success rests, failure is the loud one. */
-  .node-head > .seal {
+  .node-head > .seal,
+  .node-head > .node-play {
     margin-left: auto;
   }
   .seal {
@@ -1025,6 +1026,18 @@
      each gap. */
   .logline.open {
     height: 17px;
+  }
+  /* A broken step's reason is the thing you came to the graph to see. One
+     ellipsized line of an auth dump reads as empty; three wrapping lines is
+     still a card, not a panel. */
+  .logline.open.is-fail {
+    height: auto;
+    max-height: 51px;
+    white-space: normal;
+    color: var(--scenario-fail-text);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
   }
   .node-body.live .logline {
     color: var(--ui-text-primary);
@@ -1588,387 +1601,6 @@
     }
   }
 
-  /* ---------------- inspector (node detail view) ----------------
-     n8n's panel discipline: a compact settings column — small controls, labels
-     doing the explaining on hover, no prose between fields. The whole pane runs
-     one type size down from the canvas: it's a form, not a document. */
-  /* Surface, width, edge and entrance all come from SidePanel — this is only
-     the column inside it. It runs one type size down from the canvas because
-     it's a form, not a document. */
-  .ins {
-    display: flex;
-    min-height: 0;
-    flex: 1;
-    flex-direction: column;
-    font-size: var(--fs-tool);
-  }
-  .ins-headtext {
-    min-width: 0;
-    flex: 1;
-  }
-  .ins-title {
-    font-weight: 600;
-    letter-spacing: -0.1px;
-    font-size: var(--fs-caption);
-  }
-  .ins-sub {
-    font-size: var(--fs-badge);
-    color: var(--ui-text-tertiary);
-    margin-top: 1px;
-  }
-  /* Small controls, real gaps — density comes from control height, not from
-     cramming rows together. n8n's panel breathes between fields. */
-  .ins .fld-grid {
-    gap: 8px;
-  }
-
-  /* ---- routing rules ----
-     n8n's Routing Rules, at a side panel's width. One block per outgoing wire,
-     the destination at its head so the block answers "where does this go" before
-     it answers "when"; the condition sits under it, and `add condition` lives
-     inside the block it adds to rather than in a toolbar somewhere else.
-
-     The recess is the whole frame — no border, like every other grouped surface
-     in the app. */
-  .rule {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    background: var(--scenario-recess);
-    border-radius: 8px;
-    padding: 8px;
-  }
-  .rule + .rule {
-    margin-top: 6px;
-  }
-  /* Everything in the block starts on one text edge. The block's own 8px plus a
-     control's 8px puts field text at 16px, so the title and the destination pad
-     to match — a bordered field explains its extra inset, a borderless one just
-     looks misaligned. */
-  .rule-head,
-  .rule-to,
-  .rule-add {
-    padding-inline: 8px;
-  }
-  .rule-head {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding-right: 0;
-  }
-  /* No frames inside the block. A bordered control sitting in a tinted recess
-     draws two nested boxes for one field, which is loud in every theme and
-     unbearable in the saturated ones. The fill carries the affordance instead. */
-  .rule .inp {
-    background: color-mix(in srgb, var(--ui-base) 5%, transparent);
-    border-color: transparent;
-    box-shadow: none;
-    padding: 5px 8px;
-  }
-  .rule .inp:hover {
-    background: color-mix(in srgb, var(--ui-base) 9%, transparent);
-  }
-  .rule .inp:focus,
-  .rule .inp:focus-within,
-  .rule .inp[data-state='open'] {
-    border-color: transparent;
-    background: color-mix(in srgb, var(--ui-accent) 12%, transparent);
-  }
-  /* Titles the rule, so it wears the heading's weight and only shows an input's
-     affordances once you're in it — same trick as the step id. */
-  .rule-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    background: transparent;
-    border: 0;
-    padding: 0;
-    outline: none;
-    text-overflow: ellipsis;
-    font: inherit;
-    font-size: var(--fs-caption);
-    font-weight: 500;
-    color: var(--ui-text-primary);
-  }
-  .rule-name::placeholder {
-    color: var(--ui-text-secondary);
-    font-weight: 400;
-  }
-  .rule-name:hover::placeholder {
-    color: var(--ui-text-primary);
-  }
-  .rule-to {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--fs-badge);
-    color: var(--ui-text-tertiary);
-    margin-top: -2px;
-  }
-  /* Unwired is the normal middle of authoring a rule, not a failure — so it's
-     the same line in the same place, just italic. */
-  .rule-to.is-open {
-    font-style: italic;
-    opacity: 0.75;
-  }
-  .rule .ta {
-    width: 100%;
-    min-height: 40px;
-  }
-
-  /* n8n's filter row is [left][op][right] inline, which is built for the NDV
-     modal. At 256px that shrinks every control to an ellipsis, so the same four
-     parts fold onto two lines: what to look at, then what it has to be. */
-  .cond-wrap {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .cond {
-    display: grid;
-    grid-template-columns: 1fr 1fr auto;
-    gap: 4px;
-    align-items: center;
-  }
-  .cond .inp {
-    min-width: 0;
-  }
-  .cond > :nth-child(1),
-  .cond > :nth-child(2) {
-    grid-row: 1;
-  }
-  .cond > :nth-child(3) {
-    grid-row: 2;
-    grid-column: 1;
-  }
-  .cond > :nth-child(4) {
-    grid-row: 2;
-    grid-column: 2;
-  }
-  .cond-cut {
-    grid-row: 1 / span 2;
-    grid-column: 3;
-  }
-  /* The combinator belongs to the pair it joins, so it's indented under the
-     condition above rather than sitting flush like another field. */
-  .cond-join {
-    display: flex;
-    padding-inline: 8px;
-  }
-  .rule .cond-join .inp {
-    width: auto;
-    flex: 0 0 auto;
-    height: auto;
-    font-size: var(--fs-badge);
-    font-weight: 500;
-    letter-spacing: 0.3px;
-    padding: 2px 6px;
-    color: var(--ui-text-tertiary);
-  }
-
-  .cond-cut,
-  .rule-add,
-  .rules-add {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    background: transparent;
-    border: 0;
-    color: var(--ui-text-tertiary);
-    cursor: pointer;
-    font-size: var(--fs-badge);
-    padding: 3px 4px;
-    border-radius: var(--radius-md);
-    transition:
-      background var(--dur-fast) var(--ease-out),
-      color var(--dur-fast) var(--ease-out);
-  }
-  .rule-add {
-    align-self: flex-start;
-  }
-  /* Adds the next arm, so it's the last item in the list rather than a toolbar
-     above it — where n8n puts Add Routing Rule. */
-  .rules-add {
-    margin-top: 6px;
-    padding: 5px 8px;
-  }
-  .cond-cut:hover,
-  .rule-add:hover,
-  .rules-add:hover {
-    color: var(--ui-text-primary);
-    background: var(--ui-control-hover-background);
-  }
-
-  /* The id is a field but must not read as one — it sits where the subtitle was,
-     and only shows an input's affordances once you're in it. */
-  .ins-id {
-    background: transparent;
-    border: 0;
-    padding: 0;
-    width: 100%;
-    font: inherit;
-    font-size: var(--fs-badge);
-    color: var(--ui-text-tertiary);
-    border-radius: var(--radius-sm);
-  }
-  .ins-id:hover {
-    color: var(--ui-text-secondary);
-  }
-  .ins-id:focus {
-    outline: none;
-    color: var(--ui-text-primary);
-  }
-  /* ---- structured output rows (data tab) ---- */
-  .outlist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .out-row {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    font-size: var(--fs-caption);
-    line-height: 1.45;
-  }
-  .out-key {
-    color: var(--ui-text-secondary);
-    flex: none;
-    min-width: 66px;
-  }
-  .out-val {
-    color: var(--ui-text-primary);
-    word-break: break-word;
-  }
-  /* The Data tab prints the raw payload, so the verdict field keeps its word —
-     this is the one place it's the value being shown rather than a restatement
-     of the card's colour. Weight only; the tone lives on the node. */
-  .out-val.v-pass,
-  .out-val.v-fail {
-    font-weight: 600;
-  }
-  .out-obj {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .out-obj-row {
-    display: flex;
-    gap: 6px;
-  }
-  .out-obj-k {
-    color: var(--ui-text-tertiary);
-  }
-
-  /* data tab */
-  .verdict-inline {
-    text-transform: capitalize;
-    font-weight: 600;
-  }
-  .verdict-inline.status-done {
-    color: var(--scenario-ok-text);
-  }
-  .verdict-inline.status-failed {
-    color: var(--scenario-fail-text);
-  }
-  .verdict-inline.status-running,
-  .verdict-inline.status-looping {
-    color: var(--scenario-running);
-  }
-  /* plan — the subagent's todo list */
-  .todolist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .todo-item {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    font-size: var(--fs-caption);
-    line-height: 1.4;
-  }
-  .todo-mark {
-    color: var(--ui-text-tertiary);
-    flex: none;
-  }
-  .todo-text {
-    color: var(--ui-text-primary);
-  }
-  .todo-item.st-completed .todo-mark {
-    color: var(--ui-text-tertiary);
-  }
-  .todo-item.st-completed .todo-text {
-    color: var(--ui-text-secondary);
-    text-decoration: line-through;
-    text-decoration-color: var(--ui-text-tertiary);
-  }
-  .todo-item.st-in_progress .todo-mark {
-    color: var(--scenario-running);
-  }
-  .todo-item.st-in_progress .todo-text {
-    color: var(--ui-text-primary);
-  }
-  .todo-item.st-cancelled .todo-text {
-    color: var(--ui-text-tertiary);
-    text-decoration: line-through;
-  }
-
-  /* activity — the subagent's tool calls */
-  .calllist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .call-item {
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    font-size: var(--fs-tool);
-    line-height: 1.4;
-  }
-  .call-name {
-    color: var(--ui-text-primary);
-    flex: none;
-  }
-  .call-arg {
-    color: var(--ui-text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .call-item.live .call-name {
-    color: var(--scenario-running);
-  }
-  .call-item.live {
-    animation: pulse-dim var(--dur-breathe) var(--ease-loop) infinite;
-  }
-
-  /* One meta line atop the Data tab — status · duration · spend · take,
-     dot-separated the way the ticker and the card footer already report. */
-  .data-meta {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    font-size: var(--fs-tool);
-    color: var(--ui-text-secondary);
-    font-variant-numeric: tabular-nums;
-    margin: 2px 0 12px;
-  }
-  .data-meta > span + span::before {
-    content: '·';
-    margin: 0 6px;
-    color: var(--ui-text-tertiary);
-  }
-
   /* ---------------- run panel: timeline transport + composer ---------------- */
   /* React Flow centres a bottom-center Panel with left:50% + translateX(-50%),
      so a negative margin of half the inspector re-centres it on the visible
@@ -2001,6 +1633,7 @@
     margin-inline: 0.5rem !important;
     border-top-left-radius: 0.75rem;
     border-top-right-radius: 0.75rem;
+    overflow: visible;
   }
 
   /* A strip, not a peer: the transport must read as chrome fused to the
@@ -2011,6 +1644,7 @@
     align-items: center;
     gap: 4px;
     padding: 4px 8px;
+    overflow: visible;
   }
 
   /* the playhead track: frame ticks, loop/fail markers, scrubbable */
@@ -2093,6 +1727,24 @@
     transform: translateX(-1px);
     box-shadow: 0 0 0 1.5px var(--scenario-card);
   }
+  /* Spotify-style scrub tip: follows the pointer, time of that instant.
+     Same inverted chip the app's Tip uses — no delay, no native title
+     (those never fire during a drag). */
+  .tl-tip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    z-index: 2;
+    transform: translateX(-50%);
+    padding: 0.25rem 0.375rem;
+    background: var(--foreground);
+    color: var(--background);
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+    white-space: nowrap;
+    pointer-events: none;
+  }
 
   /* ---------------- Hermes on the canvas ----------------
      The dock's conversation is the app's real chat (`SessionChat`), so nothing
@@ -2102,12 +1754,10 @@
      What IS here is geometry, lifted from HUD mode ([data-hud-shell] in
      styles.css), which is the same problem already solved: the app's chat is
      built to FILL a pane, so floating it over something else means turning it
-     into a bar with a band above it. The chat's scroll container is
-     min-height:100%, so it can only fill or collapse — the band's height comes
-     from measuring the rows (see useBandMetrics in chat.tsx) and arrives here
-     as --canvas-band-height. HUD's other half, the visibility fade, is
-     deliberately NOT copied: HUD hides itself over someone's game, whereas
-     this dock is the page's primary control and always has the floor. */
+     into a bar with a band above it. The band grows with the conversation and
+     scrolls once it hits --canvas-band-max. HUD's other half, the visibility
+     fade, is deliberately NOT copied: HUD hides itself over someone's game,
+     whereas this dock is the page's primary control and always has the floor. */
 
   /* The dock is only as tall as the BAR. The composer docks absolutely against
      the chat surface, so the surface needs a real height or the composer has
@@ -2120,6 +1770,13 @@
     height: var(--canvas-bar-height, 3.25rem);
     min-width: 0;
     overflow: visible;
+  }
+
+  /* The session is minted with the workflow. The shared thread still
+     resumes onto a runtime, but that is not a canvas state — hide the
+     rose-curve overlay so the dock is just the composer. */
+  .canvas-chat [data-slot='thread-session-loading'] {
+    display: none;
   }
 
   .canvas-chat [data-chat-surface] {
@@ -2177,7 +1834,21 @@
     --turn-block-gap: 0.375rem;
     --paragraph-gap: 0.4rem;
     --composer-shell-pad-block-end: 0px;
-    --thread-viewport-height: 100%;
+    /* Intrinsic, not the app's calc. The band is as tall as the conversation;
+       the calc exists to shorten a pane-tall viewport so dock strips stay
+       visible, and there are no strips here. */
+    --thread-viewport-height: auto;
+
+    /* The only number: how far the transcript may grow before it scrolls. The
+       transport and composer ride under the band, so the whole dock tops out
+       around 40vh and the canvas stays the protagonist.
+
+       Zero until there are turns, so an empty session shows the composer
+       rather than an empty sheet the size of the band. */
+    --canvas-band-max: 0px;
+  }
+  .canvas-chat[data-canvas-thread] {
+    --canvas-band-max: 28vh;
   }
 
   /* The dock names the session and carries the transport, so the chat's own
@@ -2198,10 +1869,9 @@
     display: none !important;
   }
 
-  /* THE BAND IS THIS BOX — as tall as the transcript is allowed to be, sitting
-     on the composer's top edge. It has to be a real box rather than a clip: a
-     capped band whose scroll container is still pane-tall never overflows, so
-     it never scrolls, and everything past the cap is simply unreachable. */
+  /* THE BAND IS THIS BOX — bottom-anchored on the composer's top edge and as
+     tall as the conversation, up to the cap. Bottom-anchored with `top: auto`
+     is what lets it grow upward over the canvas instead of pushing the dock. */
   .canvas-chat [data-slot='composer-bounds'] {
     position: absolute !important;
     /* HUD's inset, HUD's width kill-list. The pane thread is a flex-1 column
@@ -2209,11 +1879,35 @@
        column and the timeline (which never had the cap) looks wider.
        5% each side — 10% in from the bar. */
     inset: auto 5% calc(var(--canvas-bar-height, 0px) + var(--canvas-transport-height, 0px)) 5% !important;
-    height: var(--canvas-band-height, 0px) !important;
+    height: auto !important;
     width: auto !important;
     max-width: none !important;
     flex: none !important;
     overflow: hidden;
+    /* The band's own backing. This used to be a separate absolute sibling
+       mirroring the same inset, which only worked while a script measured one
+       height for both to wear; an intrinsic band has no number to share, so
+       the box that sizes itself is the box that paints itself.
+       --dt-card, NOT --composer-fill: the fill ladder is deliberately
+       translucent for a capsule with a thread behind it; this has a node graph
+       behind it, and wires under running text is unreadable. */
+    background: var(--dt-card);
+    /* The ring is what separates the band from a same-color canvas: a hairline,
+       rounded away from the bar it stands on and square where they meet (HUD's
+       corner treatment, [data-hud-glass]). No shadow — the band is furniture
+       docked to the composer, not a floating overlay. */
+    border: 1px solid var(--ui-stroke-secondary);
+    border-bottom: 0;
+    border-radius: 0.75rem 0.75rem 0 0;
+  }
+
+  /* THE CAP LIVES ON THE SCROLLER, so reaching it turns into scrolling rather
+     than clipping. Capping an ancestor instead leaves this pane-tall and never
+     overflowing — it would never scroll, and everything past the cap would be
+     unreachable. Everything above is intrinsic, so the band is exactly as tall
+     as the transcript until the transcript is taller than the cap. */
+  .canvas-chat [data-slot='aui_thread-viewport'] {
+    max-height: var(--canvas-band-max);
   }
 
   .canvas-chat [data-slot='aui_thread-content'] {
@@ -2223,28 +1917,6 @@
     padding-block-start: 0.5rem;
   }
 
-  /* Opaque, because the graph is BEHIND this and wires crossing under running
-     text is unreadable. HUD can be translucent — it lies over someone else's
-     app and is trying not to own the screen; this owns its pane. Same fill as
-     the composer capsule under it, so the dock reads as one card. */
-  .canvas-chat-sheet {
-    position: absolute;
-    inset: auto 5% calc(var(--canvas-bar-height, 0px) + var(--canvas-transport-height, 0px)) 5%;
-    height: var(--canvas-band-height, 0px);
-    /* --dt-card, NOT --composer-fill: the fill ladder is deliberately
-       translucent for a capsule with a thread behind it; this has a node
-       graph behind it, and wires under running text is unreadable. */
-    background: var(--dt-card);
-    /* The ring is what separates the band from a same-color canvas: a
-       hairline, rounded away from the bar it stands on and square where they
-       meet (HUD's corner treatment, [data-hud-glass]). No shadow — the band
-       is furniture docked to the composer, not a floating overlay. */
-    border: 1px solid var(--ui-stroke-secondary);
-    border-bottom: 0;
-    border-radius: 0.75rem 0.75rem 0 0;
-    pointer-events: none;
-  }
-
   /* The user opens the band (focus). Hermes editing a node, a tool call, a
      busy turn — none of those summon it; the canvas is what you came to
      watch. data-chat-held is the pin AFTER they opened it (or a blocking
@@ -2252,7 +1924,6 @@
      they were reading the moment they click a card.
      Hidden means non-interactive too: an invisible band must not eat the
      canvas clicks under it. */
-  .canvas-chat .canvas-chat-sheet,
   .canvas-chat [data-slot='composer-bounds'] {
     opacity: 0;
     translate: 0 0.625rem;
@@ -2272,9 +1943,6 @@
      data-canvas-thread is the gate: a focused composer with zero turns is
      still :focus-within, and that used to summon an empty sheet. No turns,
      no band — the composer and the timeline are the whole dock. */
-  .canvas-chat[data-canvas-thread]:has([data-chat-held]) .canvas-chat-sheet,
-  .canvas-chat[data-canvas-thread]:focus-within .canvas-chat-sheet,
-  .canvas-chat[data-canvas-thread]:has([data-slot='composer-bounds']:hover) .canvas-chat-sheet,
   .canvas-chat[data-canvas-thread]:has([data-chat-held]) [data-slot='composer-bounds'],
   .canvas-chat[data-canvas-thread]:focus-within [data-slot='composer-bounds'],
   .canvas-chat[data-canvas-thread] [data-slot='composer-bounds']:hover {
@@ -2293,7 +1961,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .canvas-chat .canvas-chat-sheet,
     .canvas-chat [data-slot='composer-bounds'] {
       transition: none;
     }

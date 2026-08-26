@@ -32,7 +32,6 @@ import {
 import { DEFAULT_DIR, type FlowDir } from './layout'
 import {
   KIND_FIELDS,
-  MODEL_OPTIONS,
   ON_FAIL_OPTIONS,
   type Predicate,
   PROFILES,
@@ -106,7 +105,7 @@ const configSchema = {
       description: "The task body — the agent's instruction, or the human's question."
     },
     profile: { type: 'string', enum: [...PROFILES], description: 'The specialist that runs it.' },
-    model: { type: 'string', enum: [...MODEL_OPTIONS] },
+    model: { type: 'string', description: "Override this step's model. Empty inherits the profile default." },
     blind: {
       type: 'boolean',
       description: 'Withhold upstream output, so the step judges the artifact and not the reasoning.'

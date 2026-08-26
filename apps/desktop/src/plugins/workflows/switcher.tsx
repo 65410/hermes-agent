@@ -1,5 +1,7 @@
 /**
- * Which workflow you're looking at, and the four things you can do about it.
+ * Titlebar workflow switcher — the page projects this into `titleBar.center`
+ * (where chat shows the session-title dropdown, and Kanban shows the board)
+ * via `<Contribute>`, so it exists exactly while the page is mounted.
  *
  * A dropdown rather than tabs: tabs spend a whole row of chrome on a list that
  * is usually one item long, and they have nowhere to put "delete" that isn't a
@@ -31,12 +33,21 @@ import {
 } from '@hermes/plugin-sdk'
 import { type FormEvent, useState } from 'react'
 
-import { $currentId, $workflows, createWorkflow, removeWorkflow, renameWorkflow, type WorkflowDoc } from './documents'
+import {
+  $currentId,
+  $runCounts,
+  $workflows,
+  createWorkflow,
+  removeWorkflow,
+  renameWorkflow,
+  type WorkflowDoc
+} from './documents'
 import { blankScenario } from './scenario'
 
 export function WorkflowSwitcher() {
   const docs = useValue($workflows)
   const currentId = useValue($currentId)
+  const runs = useValue($runCounts)
   const current = docs.find(d => d.id === currentId)
 
   const [naming, setNaming] = useState<'new' | 'rename' | null>(null)
@@ -53,14 +64,16 @@ export function WorkflowSwitcher() {
             <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
+        <DropdownMenuContent align="center">
           {docs.map(doc => (
             <DropdownMenuItem key={doc.id} onSelect={() => $currentId.set(doc.id)}>
               <span className="min-w-0 truncate">{doc.name}</span>
-              <span className="ml-auto text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">
-                {doc.scenario.steps.length}
+              <span className="ml-auto flex items-center gap-1.5">
+                {(runs[doc.id] ?? 0) > 0 && (
+                  <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{runs[doc.id]}</span>
+                )}
+                {doc.id === currentId && <Codicon name="check" size="0.8rem" />}
               </span>
-              {doc.id === currentId && <Codicon name="check" size="0.8rem" />}
             </DropdownMenuItem>
           ))}
           {docs.length > 0 && <DropdownMenuSeparator />}
