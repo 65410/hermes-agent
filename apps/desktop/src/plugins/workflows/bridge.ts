@@ -67,11 +67,26 @@ const describe = (doc: WorkflowDoc, graph: Graph) => ({
   workflow: { id: doc.id, name: doc.name },
   scenario: toScenario(graph),
   problems: validate(graph).map(p => ({ level: p.level, message: p.message, ...(p.step ? { step: p.step } : {}) })),
-  // Every card carries this handle (see `cardProps` in nodes.tsx), so a step
-  // id from the scenario above is also a tour target. Stated once as a pattern
-  // rather than repeated per step: the model already has the ids, and this is
-  // the only thing it's missing to walk someone through the graph on screen.
-  tourSelector: '[data-tour="step:<id>"]'
+  // How to walk someone through the graph on screen.
+  //
+  // `selector` is stated once as a pattern rather than repeated per step: every
+  // card carries the handle (see `cardProps` in nodes.tsx), so a step id from
+  // the scenario above is already a tour target.
+  //
+  // The rules ride along because the `tour` tool is generic — it knows how to
+  // point at a thing, and nothing about what a workflow is or who is being
+  // shown one. Someone who asks for a tour is asking what this whole thing IS;
+  // opening on a node card answers a question they haven't reached yet.
+  tour: {
+    rules: [
+      'Open with a step that has NO selector. It centres on screen — that one is the whole idea of this workflow, in a sentence.',
+      'Then follow the steps in run order, one per card.',
+      'Explain it to someone who has never seen this app before, and never used one of these.',
+      'One or two short sentences per step. Never a paragraph. No jargon.',
+      'Say what a step DOES for the user, not how it is wired up.'
+    ],
+    selector: '[data-tour="step:<id>"]'
+  }
 })
 
 const summarise = (doc: WorkflowDoc) => ({
