@@ -31,6 +31,7 @@ import { sessionAwaitingInput } from '@/store/prompts'
 import { $gatewayState } from '@/store/session'
 import { $sessionTileDelegateRevision, sessionTileDelegate } from '@/store/session-states'
 
+import { $detachedNewSession } from './detached-new'
 import { SessionChat } from './session-chat'
 import { buildSessionView } from './session-view'
 
@@ -39,6 +40,12 @@ export interface DetachedSessionChatProps {
   storedSessionId: string
   /** The composer's model pill. Defaults on — same catalog as the main pane. */
   modelMenu?: boolean
+  /** The stored id is gone (never persisted, reaped on refresh). The host
+   *  owns minting a replacement — do not latch the "couldn't open" overlay. */
+  onMissing?: () => void
+  /** `/new` in this composer. When set, the slash stays on this surface
+   *  instead of starting a workspace draft. */
+  onNew?: () => void
 }
 
 /** After a turn the user was watching ends, linger so the last line doesn't
@@ -131,7 +138,13 @@ function useHeldBand(
   return awaitingInput || (userOpened && (working || grace))
 }
 
-export function DetachedSessionChat({ modelMenu, storedSessionId }: DetachedSessionChatProps) {
+function sessionIsGone(message: string): boolean {
+  const text = message.toLowerCase()
+
+  return text.includes('session not found') || text.includes('resume returned no session id')
+}
+
+export function DetachedSessionChat({ modelMenu, onMissing, onNew, storedSessionId }: DetachedSessionChatProps) {
   const [runtimeId, setRuntimeId] = useState<null | string>(null)
   const [error, setError] = useState<string | undefined>(undefined)
 
@@ -178,11 +191,21 @@ export function DetachedSessionChat({ modelMenu, storedSessionId }: DetachedSess
     delegate
       .resumeTile(storedSessionId)
       .then(claim)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+
+        if (onMissing && sessionIsGone(message)) {
+          onMissing()
+
+          return
+        }
+
+        setError(message)
+      })
       .finally(() => {
         resumingRef.current = false
       })
-  }, [claim, delegateRevision, error, gatewayOpen, runtimeId, storedSessionId])
+  }, [claim, delegateRevision, error, gatewayOpen, onMissing, runtimeId, storedSessionId])
 
   // The gateway (re)opening invalidates a latched error — it most likely came
   // from the previous connection. Clearing it retriggers the resume: one
@@ -196,6 +219,20 @@ export function DetachedSessionChat({ modelMenu, storedSessionId }: DetachedSess
   // Releasing on unmount is what makes the transcript collectable again —
   // leaving the claim behind pins every session the surface ever showed.
   useEffect(() => () => releaseDetachedSession(storedSessionId), [storedSessionId])
+
+  useEffect(() => {
+    if (!onNew) {
+      return
+    }
+
+    $detachedNewSession.set(onNew)
+
+    return () => {
+      if ($detachedNewSession.get() === onNew) {
+        $detachedNewSession.set(null)
+      }
+    }
+  }, [onNew])
 
   if (error) {
     return (
