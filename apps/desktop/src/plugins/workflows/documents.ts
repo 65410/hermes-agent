@@ -123,7 +123,7 @@ export interface DocStorage {
  *  document every frame, and serialising a scenario into localStorage sixty
  *  times a second is felt in the drag. The atom stays immediate — the switcher
  *  reads that, and it should never lag the canvas. */
-function persistRemote(docs: WorkflowDoc[], currentId: string | null): void {
+function persistRemote(docs: readonly WorkflowDoc[], currentId: string | null): void {
   void host
     .request<{
       triggers?: { webhooks?: Record<string, { route: string; secret: string; url: string }> }

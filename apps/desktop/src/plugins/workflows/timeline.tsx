@@ -9,7 +9,7 @@
 //   checkpoints — the durable stops the ⏮/⏭ buttons jump between.
 
 import { Button, cn, Codicon, GHOST_ICON_BTN, PRIMARY_ICON_FACE } from '@hermes/plugin-sdk'
-import { useCallback, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { type PointerEvent, useCallback, useMemo, useRef, useState } from 'react'
 
 import type { Player } from './player'
 import type { ProtoEvent, Verdict } from './protocol'

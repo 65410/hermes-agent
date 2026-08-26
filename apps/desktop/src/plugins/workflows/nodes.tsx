@@ -720,6 +720,6 @@ export function canvasNote(label = 'The canvas is listening'): Node {
   }
 }
 
-function NoteNode({ data }: NodeProps<{ label: string }>) {
+function NoteNode({ data }: NodeProps<Node<{ label: string }, 'note'>>) {
   return <div className="canvas-note">{data.label}</div>
 }

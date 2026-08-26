@@ -1878,9 +1878,9 @@ export { FadeScroll } from '@/components/ui/fade-scroll'
  *  invalid, and `FieldStatusSlot` does the same for a control that isn't in a
  *  `Field` or a `SidePanelMetaRow`. */
 export {
+  Field,
   FIELD_LABEL,
   FIELD_STACK,
-  Field,
   FieldHint,
   type FieldStatus,
   FieldStatusSlot,

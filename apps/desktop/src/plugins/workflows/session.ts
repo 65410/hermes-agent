@@ -126,7 +126,7 @@ export function ensureCanvasSession(workflowId: string): Promise<string> {
  *  without one (older docs, or a create that hasn't finished yet) so the
  *  canvas never has a "loading the session" state. */
 export function watchCanvasSessions(): () => void {
-  const kick = (docs: WorkflowDoc[]) => {
+  const kick = (docs: readonly WorkflowDoc[]) => {
     for (const doc of docs) {
       if (!doc.sessionId) {
         void ensureCanvasSession(doc.id)
