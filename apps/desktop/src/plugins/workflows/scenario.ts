@@ -173,7 +173,7 @@ export interface WaitUntil {
 export const WAIT_KIND_OPTIONS: { value: WaitKind; label: string; hint: string }[] = [
   { value: 'timer', label: 'Timer', hint: 'e.g. 24h — the run resumes when it elapses' },
   { value: 'event', label: 'Event', hint: 'e.g. github.pull_request.merged' },
-  { value: 'poll', label: 'Poll', hint: 'Same bus as an event — the world has to tell us' }
+  { value: 'poll', label: 'Poll', hint: 'GET a URL until it answers, e.g. every 30s https://…' }
 ]
 
 /** What starts a run. Distinct from a mid-run wait — a trigger is an entry. */
@@ -187,7 +187,7 @@ export interface TriggerOn {
 export const TRIGGER_KIND_OPTIONS: { value: TriggerKind; label: string; hint: string }[] = [
   { value: 'manual', label: 'Manual', hint: 'Play on the canvas starts it' },
   { value: 'cron', label: 'Cron', hint: 'e.g. every 2h — Hermes cron fires it' },
-  { value: 'webhook', label: 'Webhook', hint: 'An inbound POST starts it with the payload' },
+  { value: 'webhook', label: 'Webhook', hint: 'A URL you can point GitHub, Stripe, or anything at' },
   { value: 'event', label: 'Event', hint: 'e.g. github.pull_request.merged' }
 ]
 
@@ -326,8 +326,15 @@ export const ON_FAIL_OPTIONS: { value: OnFail; label: string }[] = [
   { value: 'halt', label: 'Halt' }
 ]
 
-// Real Hermes model slugs used across providers.
-export const MODEL_OPTIONS = ['claude-opus-4.8', 'gpt-5.6-sol', 'gpt-5.3-codex', 'deepseek-v3.2', 'kimi-k2-thinking']
+// Slugs the first starter canvas invented. They are not in any catalog —
+// a card that still has one must inherit the profile / default instead.
+export const PLACEHOLDER_MODELS = [
+  'claude-opus-4.8',
+  'gpt-5.6-sol',
+  'gpt-5.3-codex',
+  'deepseek-v3.2',
+  'kimi-k2-thinking'
+] as const
 
 // The profiles on this machine — `hermes profiles list`. A profile is a whole
 // Hermes install of its own; picking one is how a step gets a specialist.
@@ -393,7 +400,6 @@ type ConfigOf<K extends StepKind> = Partial<Pick<StepConfig, (typeof KIND_FIELDS
 
 const KIND_DEFAULTS: { [K in StepKind]: ConfigOf<K> } = {
   agent: {
-    model: MODEL_OPTIONS[0],
     maxIterations: 20,
     maxRetries: 1,
     timeoutMins: 0,
@@ -454,7 +460,7 @@ export function defaultConfig(def: StepDef): StepConfig {
 
 // ---------------------------------------------------------------------------
 // Scenario definition — the user's north star:
-// implement(opus4.8) -> [code_review || visual_judge] -> gate (AND-join)
+// implement -> [code_review || visual_judge] -> gate (AND-join)
 //   The two validators are ONE group. The gate joins them: ALL must pass to
 //   continue. If ANY fails, the group blocks — nothing proceeds to ship — and
 //   the gate sends feedback straight back to implement. Only the failed
@@ -472,7 +478,6 @@ export const STEP_DEFS: StepDef[] = [
     kind: 'agent',
     title: 'Implement UI',
     profile: 'designer',
-    model: 'claude-opus-4.8',
     doing: 'Coding'
   },
   {
@@ -480,7 +485,6 @@ export const STEP_DEFS: StepDef[] = [
     kind: 'agent',
     title: 'Code Review',
     profile: 'reviewer',
-    model: 'gpt-5.6-sol',
     doing: 'Reviewing'
   },
   {
@@ -488,7 +492,6 @@ export const STEP_DEFS: StepDef[] = [
     kind: 'agent',
     title: 'Visual Judge',
     profile: 'judge',
-    model: 'claude-opus-4.8',
     icon: 'eye',
     doing: 'Judging'
   },
@@ -511,7 +514,6 @@ export const STEP_DEFS: StepDef[] = [
     kind: 'agent',
     title: 'Commit & PR',
     profile: 'shipper',
-    model: 'gpt-5.6-sol',
     doing: 'Shipping'
   }
 ]
@@ -571,6 +573,27 @@ export interface Scenario {
   version: 1
   steps: ScenarioStep[]
   edges: EdgeDef[]
+}
+
+const PLACEHOLDER = new Set<string>(PLACEHOLDER_MODELS)
+
+/** Drop invented catalog slugs so a saved starter inherits the real default. */
+export function scrubScenario(scenario: Scenario): Scenario {
+  let dirty = false
+  const steps = scenario.steps.map(step => {
+    const model = step.config.model
+
+    if (!model || !PLACEHOLDER.has(model)) {
+      return step
+    }
+
+    dirty = true
+    const { model: _drop, ...config } = step.config
+
+    return { ...step, config }
+  })
+
+  return dirty ? { ...scenario, steps } : scenario
 }
 
 /** The figma → code → review → PR scenario the plugin ships with, as a value.

@@ -10,7 +10,7 @@ import { defaultConfig, STEP_KINDS, type StepDef, type StepKind } from './scenar
 
 // Adding a step, in one place.
 //
-// Two gestures offer it — the + on a connector and a double-click on empty
+// Two gestures offer it — the + on a connector and ⌘-or-Shift-click on empty
 // canvas — and they run the same command for the same reason a menu item and
 // its shortcut do. Minting the step, wiring it, snapshotting for undo and
 // leaving it selected with the inspector open all have to happen identically
@@ -90,7 +90,9 @@ export function addStep(
 ): AddedStep {
   if (where.on === 'canvas') {
     // x is a left edge and y is a centre, per the canvas's nodeOrigin.
-    const at = freeSpot(nodes, { x: where.at.x - CARD_W / 2, y: where.at.y }, dir)
+    // The listening note is scenery, not a card — don't bounce off it.
+    const cards = nodes.filter(n => (n.data as NodeData).def)
+    const at = freeSpot(cards, { x: where.at.x - CARD_W / 2, y: where.at.y }, dir)
     const node = mint(nodes, at, kind)
 
     return { nodes: selectOnly([...nodes, node], node.id), edges, id: node.id }
@@ -156,8 +158,8 @@ export function addStep(
   }
 }
 
-// Click + / double-click asks WHERE. The picker asks WHAT. Both land here so
-// an edge add and a canvas add mint the same way.
+// Click + / ⌘-or-Shift-click asks WHERE. The picker asks WHAT. Both land here
+// so an edge add and a canvas add mint the same way.
 export type RequestAdd = (where: AddAt) => void
 
 const Ctx = createContext<RequestAdd>(() => {})
