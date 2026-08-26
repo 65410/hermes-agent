@@ -80,46 +80,15 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
     return hmac.compare_digest(provided.encode(), expected.encode())
 
 
-def _hex_hmac(secret: str, data: bytes) -> str:
-    return hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
+def _is_workflow_route(route_name: str, route_config: dict) -> bool:
+    """True for a hook the Workflows canvas owns.
 
-
-def _timestamp_fresh(raw: str, stale_msg: str, *args) -> bool:
-    """True when integer timestamp header *raw* is within the replay window; unparseable → False,
-    stale → warn ``stale_msg % args`` and False."""
-    try:
-        age = abs(int(time.time()) - int(raw))
-    except (TypeError, ValueError):
-        return False
-    if age > _V2_REPLAY_WINDOW_SECONDS:
-        logger.warning(stale_msg, *args)
-        return False
-    return True
-
-
-def _is_known_platform(name: str) -> bool:
-    """Cross-platform delivery target: built-in names or plugin-registered platforms."""
-    if name in _BUILTIN_DELIVER_PLATFORMS:
-        return True
-    with suppress(Exception):
-        from gateway.platform_registry import platform_registry
-        return platform_registry.is_registered(name)
-    return False
-
-
-def _json_error(message: str, status: int) -> "web.Response":
-    return web.json_response({"error": message}, status=status)
-
-
-def _peek_session_id(store, session_key: str):
-    """Prefer the store's lock-held accessor; the private-path fallback is for older stores / test doubles."""
-    if callable(peek := getattr(store, "peek_session_id", None)):
-        return peek(session_key)
-    if hasattr(store, "_ensure_loaded"):
-        with suppress(Exception):
-            store._ensure_loaded()
-    entry = (getattr(store, "_entries", {}) or {}).get(session_key)
-    return getattr(entry, "session_id", None) if entry else None
+    Such a route answers only to its workflow: it accepts an unsigned POST
+    (the unguessable URL is the credential) and 404s rather than falling
+    through to the generic agent dispatch. The `wf-` prefix is the fallback
+    for a route whose flag an older sync dropped.
+    """
+    return bool(route_config.get("hermes_workflow")) or str(route_name).startswith("wf-")
 
 
 def check_webhook_requirements() -> bool:
@@ -598,7 +567,13 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
 
-        workflow_id = str(route_config.get("workflow") or "").strip()
+        workflow_id = ""
+        try:
+            from workflow.triggers import workflow_id_for_route
+
+            workflow_id = workflow_id_for_route(route_name, route_config)
+        except Exception:
+            workflow_id = str(route_config.get("workflow") or "").strip()
         if workflow_id:
             try:
                 from workflow.runner import start_matching, start_run
@@ -610,6 +585,12 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("[webhook] workflow start failed route=%s: %s", route_name, exc)
                 return web.json_response({"error": f"Failed to start workflow: {exc}"}, status=500)
+
+        if workflow_route:
+            return web.json_response(
+                {"error": "No workflow bound to this hook"},
+                status=404,
+            )
 
         workflow_event = str(route_config.get("workflow_event") or "").strip()
         if workflow_event:
@@ -799,6 +780,17 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.debug("[webhook] Failed to close session for %s: %s", session_chat_id, e)
 
     # --- Signature validation ---
+
+    def _request_carries_signature(self, request: "web.Request") -> bool:
+        names = (
+            "X-Webhook-Signature-V2",
+            "X-Webhook-Signature",
+            "X-Hub-Signature-256",
+            "X-Gitlab-Token",
+            "svix-signature",
+            "linear-signature",
+        )
+        return any(request.headers.get(name) or request.headers.get(name.lower()) for name in names)
 
     def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
         """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
