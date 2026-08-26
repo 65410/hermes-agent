@@ -4335,6 +4335,67 @@ export interface TraceEventsResult {
   truncated?: boolean
   recording?: boolean
 }
+/** One ``workflow.store.*`` reply: the docs (plugin-owned shape) plus webhook triggers. */
+export interface DocumentsResult {
+  docs?: unknown[]
+  currentId?: string | null
+  webhooks?: Record<string, unknown> | null
+  triggers?: unknown | null
+  [key: string]: unknown
+}
+export interface WorkflowDocsPutParams {
+  docs: unknown[]
+  currentId?: string | null
+}
+export interface WorkflowIdParams {
+  id: string
+}
+export interface WorkflowStartParams {
+  workflowId?: string
+  scenario?: unknown | null
+  payload?: unknown | null
+  source?: string
+}
+export interface WorkflowStartedResult {
+  runId: string
+  status?: string | null
+}
+export interface WorkflowRunEventsParams {
+  runId: string
+  after?: number
+}
+export interface WorkflowRunEventsResult {
+  run?: unknown | null
+  events?: unknown[]
+  runId?: string | null
+}
+export interface WorkflowRunActiveResult {
+  run?: unknown | null
+  events?: unknown[]
+  runId?: string | null
+}
+export interface WorkflowRunRespondParams {
+  runId: string
+  nodeId: string
+  decision: string
+  by?: string | null
+}
+/** One run row (``workflow/runs/<id>.json``); the runner owns the fields beyond runId/status. */
+export interface RunStateResult {
+  runId: string
+  status: string
+  [key: string]: unknown
+}
+export interface WorkflowRunEventParams {
+  name?: string
+  payload?: unknown | null
+}
+export interface WorkflowRunEventResult {
+  started?: string[]
+}
+export interface RunIdParams {
+  runId: string
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -4889,6 +4950,14 @@ export interface TraceEventPayload {
   trace_session_id: string
   event: unknown
 }
+/** One run-event log line (``workflow/store.py::append_event``); ``payload`` is the engine's (see the plugin's ``protocol.ts`` — NodeStarted, RunFinished, …). */
+export interface WorkflowRunEventPayload {
+  runId: string
+  seq: number
+  ts: number
+  type: string
+  payload?: Record<string, unknown>
+}
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
 
 // ── Client→server methods ──
@@ -5397,6 +5466,28 @@ export interface RpcMethods {
   'wake.status': { params: WakeStatusParams; result: WakeStatusResult }
   /** Stop this surface's listener; persist also writes wake_word.enabled: false. */
   'wake.stop': { params: WakeStopParams; result: WakeStopResult }
+  /** The workflow's newest run and its events (null run when none). */
+  'workflow.run.active': { params: WorkflowIdParams; result: WorkflowRunActiveResult }
+  /** Cancel a run; in-flight work finishes, nothing new starts. */
+  'workflow.run.cancel': { params: RunIdParams; result: RunStateResult }
+  /** Emit a named event that parked wait/gate steps may be waiting for. */
+  'workflow.run.event': { params: WorkflowRunEventParams; result: WorkflowRunEventResult }
+  /** One run's state and the events after a sequence number (runId 404s when unknown). */
+  'workflow.run.events': { params: WorkflowRunEventsParams; result: WorkflowRunEventsResult }
+  /** Request a pause: the loop stops at the next step boundary. */
+  'workflow.run.pause': { params: RunIdParams; result: RunStateResult }
+  /** Answer a run's parked human-approval step (approved / denied). */
+  'workflow.run.respond': { params: WorkflowRunRespondParams; result: RunStateResult }
+  /** Resume a paused run from where it parked. */
+  'workflow.run.resume': { params: RunIdParams; result: RunStateResult }
+  /** Start a gateway run of a stored workflow graph. */
+  'workflow.run.start': { params: WorkflowStartParams; result: WorkflowStartedResult }
+  /** Every workflow document under HERMES_HOME/workflows, plus webhook triggers. */
+  'workflow.store.list': { params: Params; result: DocumentsResult }
+  /** Save the workflow documents and return the synced webhook triggers. */
+  'workflow.store.put': { params: WorkflowDocsPutParams; result: DocumentsResult }
+  /** Delete one workflow document and return the remainder. */
+  'workflow.store.remove': { params: WorkflowIdParams; result: DocumentsResult }
 }
 export type RpcMethod = keyof RpcMethods
 export const RPC_METHODS = [
@@ -5651,7 +5742,18 @@ export const RPC_METHODS = [
   'wake.resume',
   'wake.start',
   'wake.status',
-  'wake.stop'
+  'wake.stop',
+  'workflow.run.active',
+  'workflow.run.cancel',
+  'workflow.run.event',
+  'workflow.run.events',
+  'workflow.run.pause',
+  'workflow.run.respond',
+  'workflow.run.resume',
+  'workflow.run.start',
+  'workflow.store.list',
+  'workflow.store.put',
+  'workflow.store.remove'
 ] as const satisfies readonly RpcMethod[]
 
 // ── Server→client requests ──
@@ -5857,6 +5959,8 @@ export interface BackendGatewayEventMap {
   'voice.transcript': VoiceTranscriptPayload
   /** A wake phrase fired. */
   'wake.detected': WakeDetectedPayload
+  /** A workflow run's event log, folded live by the Workflows canvas. */
+  'workflow.run': WorkflowRunEventPayload
 }
 export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
@@ -5935,5 +6039,6 @@ export const GATEWAY_EVENT_TYPES = [
   'voice.interrupted',
   'voice.status',
   'voice.transcript',
-  'wake.detected'
+  'wake.detected',
+  'workflow.run'
 ] as const satisfies readonly BackendGatewayEventName[]

@@ -24,6 +24,48 @@ def test_requires_callback():
     assert "error" in call(action="read", callback=None)
 
 
+def test_run_does_not_need_the_canvas(tmp_path, monkeypatch):
+    """A run is the gateway walking the stored graph, not a renderer round-trip."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from workflow.store import save_documents
+
+    save_documents(
+        [
+            {
+                "id": "job",
+                "name": "Job",
+                "scenario": {
+                    "steps": [{"id": "work", "kind": "agent", "config": {"title": "Work", "goal": "go"}}],
+                    "edges": [],
+                },
+            }
+        ],
+        "job",
+    )
+    from workflow import runner
+
+    monkeypatch.setattr(
+        runner,
+        "_execute_fn",
+        lambda goal, context, payload, config: {
+            "ok": True,
+            "summary": "ok",
+            "verdict": "PASS",
+            "output": {},
+        },
+    )
+    result = call(action="run", workflow="job")
+    assert "error" not in result
+    assert result["runId"]
+    assert result["workflow"] == "job"
+
+
+def test_run_needs_a_workflow():
+    result = call(action="run")
+    assert "error" in result
+    assert "run" in result["error"]
+
+
 def test_rejects_an_unknown_action():
     result = call(action="redraw", callback=lambda _p: "{}")
     assert "error" in result

@@ -29,11 +29,11 @@ from typing import Callable, Optional
 
 from tools.registry import registry, tool_error
 
-ACTIONS = ("read", "edit", "list", "open", "create")
+ACTIONS = ("read", "edit", "list", "open", "create", "run")
 
 # Verbs that name a workflow to act on. `create` takes a name for a new one;
-# `open` takes an id or name of an existing one.
-NEEDS_WORKFLOW = ("open", "create")
+# `open` / `run` take an id or name of an existing one.
+NEEDS_WORKFLOW = ("open", "create", "run")
 
 
 def workflow_tool(
@@ -41,18 +41,39 @@ def workflow_tool(
     ops: Optional[list] = None,
     workflow: Optional[str] = None,
     scenario: Optional[dict] = None,
+    payload: Optional[object] = None,
     callback: Optional[Callable] = None,
 ) -> str:
-    """Dispatch one canvas action to the desktop renderer and return its outcome."""
-    if callback is None:
-        return tool_error("workflow is only available in the Hermes desktop app.")
-
+    """Dispatch one canvas action, or start a stored run on the gateway."""
     verb = (action or "").strip().lower()
     if verb not in ACTIONS:
         return tool_error(f"action must be one of: {', '.join(ACTIONS)}.")
 
     if verb in NEEDS_WORKFLOW and not (workflow or "").strip():
         return tool_error(f"{verb} needs a workflow name.")
+
+    # A run is the gateway walking the stored graph. It does not need the
+    # canvas — that is the point of the HERMES_HOME copy.
+    if verb == "run":
+        try:
+            from workflow.runner import start_run
+
+            state = start_run(str(workflow).strip(), payload=payload, source="tool")
+        except ValueError as exc:
+            return tool_error(str(exc))
+        except Exception as exc:
+            return tool_error(f"Failed to start the run: {exc}")
+        return json.dumps(
+            {
+                "runId": state.get("runId"),
+                "status": state.get("status"),
+                "workflow": state.get("workflowId"),
+            },
+            ensure_ascii=False,
+        )
+
+    if callback is None:
+        return tool_error("workflow is only available in the Hermes desktop app.")
 
     if verb == "edit":
         if not isinstance(ops, list) or not ops:
@@ -102,9 +123,10 @@ WORKFLOW_SCHEMA = {
     "description": (
         "Read and edit the workflow open on the Workflows canvas in the Hermes "
         "desktop GUI — the node graph the user is looking at. A workflow is a "
-        "graph of steps: 'agent' (a model does the work), 'human' (a person "
-        "does, and the run parks on them), 'gate' (branches on what already "
-        "happened), and 'wait' (holds for the world). "
+        "graph of steps: 'trigger' (what starts a run), 'agent' (a model does "
+        "the work), 'human' (a person does, and the run parks on them), "
+        "'gate' (branches on what already happened), and 'wait' (holds for "
+        "the world). "
         "ALWAYS call action='read' first. It returns the open workflow's "
         "scenario — every step with its id and config, every wire with its "
         "branch condition — plus the current validation problems AND the list "
@@ -126,6 +148,8 @@ WORKFLOW_SCHEMA = {
         "switches the canvas to one of them (by id or name); action='create' "
         "makes a new one and opens it, optionally seeded with a scenario. Both "
         "open and create bring the canvas on screen. "
+        "action='run' starts the stored workflow on the gateway (optional "
+        "payload is handed to the first step). It does not need the canvas. "
         "To WALK someone through a workflow rather than describe it, pair this "
         "with the `tour` tool: every step card on the canvas is addressable as "
         "[data-tour=\"step:<id>\"] using the ids from action='read', so you can "
@@ -167,9 +191,12 @@ WORKFLOW_SCHEMA = {
             "workflow": {
                 "type": "string",
                 "description": (
-                    "For 'open': the id or name of the workflow to switch to. "
+                    "For 'open' / 'run': the id or name of the workflow. "
                     "For 'create': the name of the new one."
                 ),
+            },
+            "payload": {
+                "description": "For 'run': optional trigger payload handed to the first step.",
             },
             "scenario": {
                 "type": "object",
@@ -193,6 +220,7 @@ registry.register(
         ops=args.get("ops"),
         workflow=args.get("workflow"),
         scenario=args.get("scenario"),
+        payload=args.get("payload"),
         callback=kw.get("callback"),
     ),
     emoji="🕸️",
