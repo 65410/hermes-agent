@@ -1697,7 +1697,13 @@ export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/
 /** The composer control row's button vocabulary — a ghost icon for the
  *  secondary controls, a solid circle for the one primary action. Wear these on
  *  any control that rides the composer so a plugin's row reads as the same row. */
-export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from '@/app/chat/composer/control-classes'
+export {
+  ACTIVE_ICON_BTN,
+  GHOST_ICON_BTN,
+  ICON_BTN,
+  PRIMARY_ICON_BTN,
+  PRIMARY_ICON_FACE
+} from '@/app/chat/composer/control-classes'
 /** A REAL Hermes chat, for a session the plugin owns — the same thread, tool
  *  cards, streaming indicators, attachments and composer the workspace pane
  *  renders, not a lookalike. The plugin creates or resumes the session and
@@ -1865,10 +1871,21 @@ export {
 export { EmptyState } from '@/components/ui/empty-state'
 export { ErrorState } from '@/components/ui/error-state'
 export { FadeScroll } from '@/components/ui/fade-scroll'
-/** The app's one field language — a label stacked over its control, hint
- *  underneath. Don't hand-roll a label+control stack; both bundled plugins did,
- *  and the two of them plus this made three. */
-export { Field, FieldHint } from '@/components/ui/field'
+/** The app's one field language — a label stacked over its control, hint or
+ *  `status` underneath. Don't hand-roll a label+control stack; both bundled
+ *  plugins did, and the two of them plus this made three. Don't hand-roll the
+ *  error line either: `status` puts it under the control and marks the control
+ *  invalid, and `FieldStatusSlot` does the same for a control that isn't in a
+ *  `Field` or a `SidePanelMetaRow`. */
+export {
+  FIELD_LABEL,
+  FIELD_STACK,
+  Field,
+  FieldHint,
+  type FieldStatus,
+  FieldStatusSlot,
+  useFieldControl
+} from '@/components/ui/field'
 export { GlyphSpinner, type SpinnerName } from '@/components/ui/glyph-spinner'
 export { Input } from '@/components/ui/input'
 export { Kbd, KbdGroup } from '@/components/ui/kbd'
@@ -1906,6 +1923,7 @@ export { Separator } from '@/components/ui/separator'
  *  behind it stays live. NOT `Sheet`, which is a portalled modal dialog. */
 export {
   SIDE_PANEL_LABEL,
+  SIDE_PANEL_TITLE,
   SidePanel,
   SidePanelAction,
   SidePanelBody,
@@ -1916,6 +1934,7 @@ export {
   type SidePanelProps,
   SidePanelSection,
   SidePanelTitle,
+  SidePanelTitleInput,
   SidePanelToolbar
 } from '@/components/ui/side-panel'
 export { Skeleton } from '@/components/ui/skeleton'

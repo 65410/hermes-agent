@@ -8,10 +8,11 @@
  * they're too small to hit and they'd be a second pair of arrows.
  */
 
-import { controlVariants } from '@/components/ui/control'
+import { type ControlVariantProps, controlVariants } from '@/components/ui/control'
 import { cn } from '@/lib/utils'
 
 export function Stepper({
+  chrome,
   className,
   max = 999,
   min = 0,
@@ -31,7 +32,7 @@ export function Stepper({
   /** Render `min` as "∞", for a budget whose floor means "no limit". */
   unboundedAtMin?: boolean
   value: number
-}) {
+} & Pick<ControlVariantProps, 'chrome'>) {
   const clamp = (n: number) => Math.max(min, Math.min(max, n))
   const unbounded = unboundedAtMin && value <= min
 
@@ -41,7 +42,7 @@ export function Stepper({
   )
 
   return (
-    <div className={cn(controlVariants({ size: 'sm' }), 'flex items-center gap-1 py-0', className)}>
+    <div className={cn(controlVariants({ chrome, size: 'sm' }), 'flex items-center gap-1 py-0', className)}>
       <button
         aria-label="Decrease"
         className={nudge}
@@ -52,7 +53,7 @@ export function Stepper({
         −
       </button>
       <input
-        className="min-w-0 flex-1 border-0 bg-transparent py-1 text-center text-xs leading-4 tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        className="min-w-8 flex-1 border-0 bg-transparent py-1 text-center text-xs leading-4 tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         max={max}
         min={min}
         onChange={event => onChange(clamp(Number(event.target.value)))}

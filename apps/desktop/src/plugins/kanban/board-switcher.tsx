@@ -146,7 +146,9 @@ function BoardDialog({
   )
 }
 
-/** Display name, with the slug it maps to shown underneath. */
+/** Display name, with the slug it maps to shown underneath. A name of pure
+ *  punctuation slugs to nothing, which only showed up as a Create button that
+ *  wouldn't light — the field says it instead. */
 function BoardNameField({
   onChange,
   onEnter,
@@ -161,7 +163,10 @@ function BoardNameField({
   const k = useKanban()
 
   return (
-    <Field label={k.name}>
+    <Field
+      label={k.name}
+      status={value.trim() && !slug ? { level: 'error', message: k.boardNameUnusable } : undefined}
+    >
       <Input
         autoFocus
         onChange={event => onChange(event.target.value)}

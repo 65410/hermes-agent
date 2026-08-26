@@ -31,6 +31,8 @@ import {
   DropdownMenuTrigger,
   ErrorState,
   Field,
+  type FieldStatus,
+  FieldStatusSlot,
   formatModifierToken,
   host,
   Input,
@@ -584,6 +586,7 @@ function NewTaskDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
   const [estimate, setEstimate] = useState<null | TaskEstimate>(null)
+  const [submitted, setSubmitted] = useState(false)
 
   // Rough effort estimate from the typed title/body (before the task exists),
   // via the auto-routed auxiliary model. Makes a model call — explicit action.
@@ -617,11 +620,17 @@ function NewTaskDialog({
       setError(null)
       setBusy(false)
       setEstimate(null)
+      setSubmitted(false)
     }
   }, [target, boardDefaultKind])
 
+  const titleStatus: FieldStatus | undefined =
+    submitted && !title.trim() ? { level: 'error', message: k.titleRequired } : undefined
+
   const submit = async () => {
     const trimmed = title.trim()
+
+    setSubmitted(true)
 
     if (!trimmed || !target || busy) {
       return
@@ -686,18 +695,22 @@ function NewTaskDialog({
           <DialogTitle>{target ? k.newTaskIn(columnLabel(k, target)) : k.newTask}</DialogTitle>
         </DialogHeader>
         <div className="flex max-h-[min(72vh,44rem)] flex-col gap-3 overflow-y-auto pr-0.5">
-          <Input
-            autoFocus
-            onChange={event => setTitle(event.target.value)}
-            onKeyDown={event => {
-              if (isSubmitEnter(event)) {
-                event.preventDefault()
-                void submit()
-              }
-            }}
-            placeholder={isTriage ? k.titlePlaceholderTriage : k.titlePlaceholder}
-            value={title}
-          />
+          {/* Enter on an empty title used to do nothing at all — the Create
+              button greys out, but the keyboard path had no way to say why. */}
+          <FieldStatusSlot status={titleStatus}>
+            <Input
+              autoFocus
+              onChange={event => setTitle(event.target.value)}
+              onKeyDown={event => {
+                if (isSubmitEnter(event)) {
+                  event.preventDefault()
+                  void submit()
+                }
+              }}
+              placeholder={isTriage ? k.titlePlaceholderTriage : k.titlePlaceholder}
+              value={title}
+            />
+          </FieldStatusSlot>
           <Textarea
             className="min-h-20"
             onChange={event => setBodyText(event.target.value)}
