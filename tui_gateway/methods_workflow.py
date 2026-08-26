@@ -16,16 +16,20 @@ method = _registry.method
 
 @method("workflow.store.list")
 def _(rid, params: dict) -> dict:
-    from workflow.store import load_documents
-    from workflow.triggers import route_name, secret_for
+    from workflow.store import list_runs, load_documents
+    from workflow.triggers import hook_info, secret_for
 
     payload = load_documents()
     webhooks = {}
     for doc in payload["docs"]:
-        secret = secret_for(doc["id"])
-        if secret:
-            webhooks[doc["id"]] = {"route": route_name(doc["id"]), "secret": secret}
-    return _ok(rid, {**payload, "webhooks": webhooks})
+        if secret_for(doc["id"]):
+            webhooks[doc["id"]] = hook_info(doc["id"])
+    runs: dict[str, int] = {}
+    for run in list_runs():
+        wid = run.get("workflowId")
+        if isinstance(wid, str) and wid:
+            runs[wid] = runs.get(wid, 0) + 1
+    return _ok(rid, {**payload, "webhooks": webhooks, "runs": runs})
 
 
 @method("workflow.store.put")
@@ -77,6 +81,7 @@ def _(rid, params: dict) -> dict:
             scenario=scenario,
             payload=params.get("payload"),
             source=str(params.get("source") or "manual"),
+            fake=bool(params.get("fake")),
         )
     except ValueError as exc:
         return _err(rid, 4004, str(exc))

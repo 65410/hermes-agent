@@ -35,6 +35,30 @@ _thread_lock = threading.Lock()
 _run_locks: dict[str, threading.Lock] = {}
 _run_locks_guard = threading.Lock()
 _timer_threads: dict[str, threading.Thread] = {}
+# Pause/cancel from the RPC thread. The runner holds its own state dict and
+# save_run's it — writing the flag only to disk gets clobbered, so the live
+# loop never sees it.
+_signals: dict[str, str] = {}
+_signals_lock = threading.Lock()
+
+
+def _signal(run_id: str, kind: str) -> None:
+    with _signals_lock:
+        _signals[run_id] = kind
+
+
+def _clear_signal(run_id: str) -> None:
+    with _signals_lock:
+        _signals.pop(run_id, None)
+
+
+def _absorb_signals(state: dict) -> None:
+    with _signals_lock:
+        kind = _signals.get(state["runId"])
+    if kind == "pause":
+        state["pauseRequested"] = True
+    elif kind == "cancel":
+        state["status"] = "cancelled"
 
 
 def set_execute_fn(fn: ExecuteFn | None) -> None:
@@ -72,8 +96,18 @@ def _by_id(scenario: dict) -> dict[str, dict]:
     return {s["id"]: s for s in _steps(scenario)}
 
 
-def _preds(scenario: dict, node_id: str) -> list[str]:
-    return [e["source"] for e in _edges(scenario) if e["target"] == node_id]
+def _is_loop(edge: dict) -> bool:
+    return bool(edge.get("loop"))
+
+
+def _preds(scenario: dict, node_id: str, *, loops: bool = False) -> list[str]:
+    """Incoming wires that must have run before ``node_id`` can. Rework loops
+    are not inputs — they fire later, from a gate that already ran."""
+    return [
+        e["source"]
+        for e in _edges(scenario)
+        if e["target"] == node_id and (loops or not _is_loop(e))
+    ]
 
 
 def _succs(scenario: dict, node_id: str, handle: str | None = None) -> list[str]:
@@ -102,6 +136,24 @@ def _title(step: dict) -> str:
     return str(cfg.get("title") or step.get("title") or step["id"])
 
 
+def parse_poll(spec: str) -> tuple[float, str] | None:
+    """Interval + URL, or None when the spec is an event name on the bus."""
+    text = (spec or "").strip()
+    every = re.match(
+        r"^(?:every\s+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)\s+(https?://\S+)",
+        text,
+        re.I,
+    )
+    if every:
+        value = float(every.group(1))
+        unit = every.group(2)[0].lower()
+        seconds = value * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+        return max(1.0, seconds), every.group(3)
+    if re.match(r"^https?://", text, re.I):
+        return 60.0, text
+    return None
+
+
 def parse_wait_seconds(spec: str) -> float | None:
     text = (spec or "").strip().lower()
     every = re.match(r"^every\s+(\d+(?:\.\d+)?)\s*([smhd])", text)
@@ -118,7 +170,7 @@ def _holds(when: dict, inputs: list[dict]) -> bool:
     if mode == "always":
         return True
     if mode == "all-pass":
-        return bool(inputs) and all(i.get("verdict") != "FAIL" for i in inputs)
+        return bool(inputs) and all(i.get("verdict") == "PASS" for i in inputs)
     if mode == "any-fail":
         return any(i.get("verdict") == "FAIL" for i in inputs)
     if mode == "checks":
@@ -151,12 +203,30 @@ def _between(scenario: dict, start: str, end: str) -> list[str]:
 
 
 def _emit(state: dict, event_type: str, payload: dict | None = None) -> dict:
-    return append_event(state["runId"], event_type, payload)
+    seq = int(state.get("seq") or 0)
+    event = append_event(state["runId"], event_type, payload, seq=seq)
+    state["seq"] = seq + 1
+    return event
+
+
+def _thread_alive(run_id: str) -> bool:
+    with _thread_lock:
+        thread = _threads.get(run_id)
+    return thread is not None and thread.is_alive()
+
+
+def _fail_dead_run(state: dict) -> dict:
+    state["status"] = "failed"
+    state["failed"] = True
+    state["pauseRequested"] = False
+    save_run(state)
+    _emit(state, "RunFinished", {"state": "failed", "error": "runner process died"})
+    return load_run(state["runId"]) or state
 
 
 def _context_for(state: dict, node_id: str) -> str:
     parts = []
-    for pred in _preds(state["scenario"], node_id):
+    for pred in _preds(state["scenario"], node_id, loops=True):
         summary = (state.get("summaries") or {}).get(pred)
         output = (state.get("outputs") or {}).get(pred)
         if summary:
@@ -192,6 +262,7 @@ def _fresh_state(workflow_id: str, scenario: dict, payload: Any, source: str, na
         "failed": False,
         "tries": {},
         "inFlight": [],
+        "sessions": {},
     }
 
 
@@ -203,6 +274,7 @@ def start_run(
     source: str = "manual",
     execute_fn: ExecuteFn | None = None,
     background: bool = True,
+    fake: bool = False,
 ) -> dict:
     doc = get_document(workflow_id)
     if doc is not None:
@@ -220,9 +292,14 @@ def start_run(
     name = (doc or {}).get("name") or workflow_id
     existing = active_run(workflow_id)
     if existing is not None:
-        return existing
+        if existing.get("status") == "running" and not _thread_alive(existing["runId"]):
+            _fail_dead_run(existing)
+        else:
+            return existing
 
     state = _fresh_state(workflow_id, scenario, payload, source, name)
+    if fake:
+        state["fake"] = True
     steps = _steps(scenario)
     entries = [s["id"] for s in steps if not _preds(scenario, s["id"])]
     if not entries and steps:
@@ -328,12 +405,17 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
         state["inFlight"] = []
         save_run(state)
 
+    def park_pause() -> dict:
+        state["status"] = "paused"
+        state["inFlight"] = []
+        save_run(state)
+        _emit(state, "RunPaused", {})
+        return state
+
     while state["queue"] and state.get("status") == "running":
+        _absorb_signals(state)
         if state.get("pauseRequested"):
-            state["status"] = "paused"
-            save_run(state)
-            _emit(state, "RunPaused", {})
-            return state
+            return park_pause()
 
         ran = set(state["ran"])
         satisfied = set(state["satisfied"])
@@ -374,6 +456,13 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
             routed.extend(extra)
             halted = halted or stop
             state["inFlight"] = [x for x in state["inFlight"] if x not in agents]
+
+        _absorb_signals(state)
+        if state.get("pauseRequested"):
+            for nxt in routed:
+                if nxt in by_id and nxt not in state["queue"]:
+                    state["queue"].append(nxt)
+            return park_pause()
 
         for node_id in gates:
             step = by_id[node_id]
@@ -420,6 +509,19 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
     if state.get("park") or state.get("status") == "paused":
         save_run(state)
         return state
+
+    leftover = [node_id for node_id in state["queue"] if node_id not in state["ran"]]
+    if leftover and not state.get("failed"):
+        state["failed"] = True
+        _emit(
+            state,
+            "NodeFailed",
+            {
+                "nodeId": leftover[0],
+                "iteration": int((state.get("take") or {}).get(leftover[0]) or 0),
+                "error": f"never became ready (still waiting on {', '.join(leftover)})",
+            },
+        )
 
     state["status"] = "failed" if state.get("failed") else "succeeded"
     save_run(state)
@@ -591,8 +693,33 @@ def _park_wait(state: dict, step: dict, iteration: int) -> bool:
         "WaitStarted",
         {"nodeId": step["id"], "iteration": iteration, "until": f"{kind} · {label}", "label": label},
     )
-    # Only a timer is a clock. Event and poll both wait on the bus — poll
-    # used to sleep one interval and lie that it had asked the world.
+    if kind == "poll":
+        parsed = parse_poll(spec)
+        if parsed is not None:
+            seconds, url = parsed
+            state["status"] = "waiting_world"
+            state["park"] = {
+                "kind": "wait",
+                "nodeId": step["id"],
+                "iteration": iteration,
+                "until": "poll",
+                "url": url,
+                "interval": seconds,
+                "by": "poll matched",
+            }
+            _arm_poll(state["runId"], seconds, url)
+            return True
+        # A bare name is still a bus park — something else has to tell us.
+        state["status"] = "waiting_world"
+        state["waitingEvent"] = spec or kind
+        state["park"] = {
+            "kind": "wait",
+            "nodeId": step["id"],
+            "iteration": iteration,
+            "until": kind,
+            "by": "event received",
+        }
+        return True
     if kind != "timer":
         state["status"] = "waiting_world"
         state["waitingEvent"] = spec or kind
@@ -629,6 +756,99 @@ def _finish_wait(state: dict, node_id: str, iteration: int, by: str) -> None:
     state["status"] = "running"
 
 
+# Recording stand-in — no model. Off unless a caller asks for it with the
+# `fake` flag on workflow.run.start; tests and screen recordings do, the
+# canvas does not. Implement lingers so the card keeps spinning; everything
+# else lands in a few seconds.
+_FAKE_TOOLS: dict[str, list[tuple[str, str]]] = {
+    "implement": [
+        ("read_file", "src/components/ui/button.tsx"),
+        ("search_files", "Marketing Site v3"),
+        ("write_file", "src/pages/Home.tsx"),
+        ("patch", "src/styles.css"),
+        ("read_file", "src/pages/Home.tsx"),
+        ("search_files", "token --color-primary"),
+        ("write_file", "src/components/Hero.tsx"),
+        ("patch", "src/pages/Home.tsx"),
+    ],
+    "review": [
+        ("read_file", "src/pages/Home.tsx"),
+        ("search_files", "inline style"),
+    ],
+    "judge": [
+        ("browser_navigate", "http://localhost:5173"),
+        ("vision_analyze", "Figma · Marketing Site v3"),
+    ],
+    "ship": [
+        ("terminal", "git status"),
+        ("terminal", "gh pr create"),
+    ],
+}
+
+_FAKE_DONE: dict[str, dict] = {
+    "implement": {
+        "ok": True,
+        "summary": "Built the header from the Figma tokens. diff +48 −0 · 3 files",
+        "verdict": "PASS",
+        "output": {"text": "header + hero from tokens", "files": 3},
+    },
+    "review": {
+        "ok": True,
+        "summary": "PASS · naming clean, no inline styles",
+        "verdict": "PASS",
+        "output": {"text": "review notes: none"},
+    },
+    "judge": {
+        "ok": True,
+        "summary": "PASS · H1 700 matches · pad 16=16px",
+        "verdict": "PASS",
+        "output": {"text": "visual match"},
+    },
+    "ship": {
+        "ok": True,
+        "summary": "PR #1241 opened",
+        "verdict": "PASS",
+        "output": {"text": "PR #1241", "href": "https://github.com/nousresearch/hermes-agent/pull/1241"},
+    },
+}
+
+
+def _play_fake(state: dict, step: dict, iteration: int) -> dict:
+    node_id = step["id"]
+    tools = _FAKE_TOOLS.get(node_id) or [("read_file", node_id)]
+    # Implement holds the spinner for a recording beat. Pause or cancel
+    # cuts it short so you can linger there without waiting out the clock.
+    hold = 28.0 if node_id == "implement" else 2.8
+    tick = 1.6 if node_id == "implement" else 1.2
+    started = time.time()
+    i = 0
+    while time.time() - started < hold:
+        name, arg = tools[i % len(tools)]
+        _emit(
+            state,
+            "AgentTraceEvent",
+            {"nodeId": node_id, "iteration": iteration, "tool": {"name": name, "arg": arg}},
+        )
+        i += 1
+        deadline = time.time() + tick
+        while time.time() < deadline:
+            _absorb_signals(state)
+            live = load_run(state["runId"]) or {}
+            if state.get("pauseRequested") or live.get("pauseRequested") or live.get("status") in {"cancelled", "failed"}:
+                break
+            time.sleep(0.15)
+        _absorb_signals(state)
+        live = load_run(state["runId"]) or {}
+        if live.get("status") in {"cancelled", "failed"}:
+            state["status"] = live["status"]
+            return {"ok": False, "error": "cancelled"}
+        if state.get("pauseRequested") or live.get("pauseRequested"):
+            state["pauseRequested"] = True
+            return {"ok": True, "_paused": True}
+    done = dict(_FAKE_DONE.get(node_id) or {"ok": True, "summary": "done", "verdict": "PASS", "output": {"text": "done"}})
+    return done
+
+
 def _compute_agent(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | None) -> dict:
     node_id = step["id"]
     cfg = _config(step)
@@ -639,10 +859,26 @@ def _compute_agent(state: dict, step: dict, iteration: int, execute_fn: ExecuteF
     def on_tool(name: str, arg: str = "") -> None:
         traces.append((name, arg))
 
+    sessions = state.setdefault("sessions", {})
+    existing = sessions.get(node_id)
+    session_id = existing or f"wf-{state['runId']}-{node_id}"
+    sessions[node_id] = session_id
+    save_run(state)
+    resume = bool(existing)
+    if state.get("fake") and execute_fn is None:
+        return _play_fake(state, step, iteration)
     if execute_fn is None:
         from workflow.agent import execute_agent_step
 
-        result = execute_agent_step(goal, context, state.get("payload"), cfg, on_tool=on_tool)
+        result = execute_agent_step(
+            goal,
+            context,
+            state.get("payload"),
+            cfg,
+            on_tool=on_tool,
+            session_id=session_id,
+            resume=resume or bool(state.get("tries", {}).get(node_id)),
+        )
     else:
         result = execute_fn(goal, context, state.get("payload"), cfg)
     if traces:
@@ -659,9 +895,18 @@ def _apply_agent(state: dict, step: dict, iteration: int, result: dict) -> str:
             "AgentTraceEvent",
             {"nodeId": node_id, "iteration": iteration, "tool": {"name": name, "arg": arg}},
         )
+    if result.get("_paused"):
+        state["pauseRequested"] = True
+        return "hold"
     if not result.get("ok", True):
         error = str(result.get("error") or "step failed")
         _emit(state, "NodeFailed", {"nodeId": node_id, "iteration": iteration, "error": error})
+        from workflow.agent import is_user_fixable
+
+        if is_user_fixable(error):
+            _emit(state, "UserAsk", {"nodeId": node_id, "prompt": error})
+            state["failed"] = True
+            return "halt"
         retries = int(state.setdefault("tries", {}).get(node_id) or 0)
         allowed = int(cfg.get("maxRetries") or 0)
         if retries < allowed:
@@ -731,6 +976,9 @@ def _run_agents(state: dict, steps: list[dict], execute_fn: ExecuteFn | None) ->
             halted = True
         elif stop == "retry":
             state["queue"].append(step["id"])
+        elif stop == "hold":
+            if step["id"] not in state["queue"]:
+                state["queue"].append(step["id"])
         else:
             routed.extend(_succs(state["scenario"], step["id"]))
     return routed, halted
@@ -829,6 +1077,59 @@ def _arm_timer(run_id: str, seconds: float) -> None:
     thread.start()
 
 
+def _http_ok(url: str) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return 200 <= int(getattr(resp, "status", 200)) < 300
+    except Exception:
+        return False
+
+
+def _arm_poll(run_id: str, seconds: float, url: str) -> None:
+    def fire() -> None:
+        time.sleep(max(1.0, seconds))
+        if _http_ok(url):
+            tick_polls(run_id=run_id)
+            return
+        live = load_run(run_id)
+        park = (live or {}).get("park") or {}
+        if live and live.get("status") == "waiting_world" and park.get("url") == url:
+            _arm_poll(run_id, float(park.get("interval") or seconds), url)
+
+    thread = threading.Thread(target=fire, name=f"workflow-poll-{run_id}", daemon=True)
+    with _thread_lock:
+        _timer_threads[f"poll:{run_id}"] = thread
+    thread.start()
+
+
+def tick_polls(run_id: str | None = None) -> list[str]:
+    resumed: list[str] = []
+    runs = [load_run(run_id)] if run_id else list_runs()
+    for state in runs:
+        if not state or state.get("status") != "waiting_world":
+            continue
+        park = state.get("park") or {}
+        if park.get("until") != "poll" or not park.get("url"):
+            continue
+        if not _http_ok(park["url"]):
+            continue
+        with _lock_for(state["runId"]):
+            live = load_run(state["runId"])
+            if live is None or live.get("status") != "waiting_world":
+                continue
+            node_id = park["nodeId"]
+            _finish_wait(live, node_id, int(park.get("iteration") or 0), "poll matched")
+            for nxt in _succs(live["scenario"], node_id):
+                if nxt not in live["queue"]:
+                    live["queue"].append(nxt)
+            save_run(live)
+        _spawn(state["runId"])
+        resumed.append(state["runId"])
+    return resumed
+
+
 def tick_timers(run_id: str | None = None) -> list[str]:
     """Resume timer parks whose wake time has passed. Called on a timer thread and at boot."""
     now = time.time()
@@ -862,8 +1163,13 @@ def request_pause(run_id: str) -> dict:
     state = load_run(run_id)
     if state is None:
         raise ValueError(f"No run '{run_id}'.")
+    if state.get("status") != "running":
+        return state
     if state.get("park"):
         return state
+    if not _thread_alive(run_id):
+        return _fail_dead_run(state)
+    _signal(run_id, "pause")
     state["pauseRequested"] = True
     save_run(state)
     return state
@@ -875,6 +1181,7 @@ def resume_run(run_id: str, *, execute_fn: ExecuteFn | None = None) -> dict:
         raise ValueError(f"No run '{run_id}'.")
     if state.get("status") != "paused":
         return state
+    _clear_signal(run_id)
     state["pauseRequested"] = False
     state["status"] = "running"
     save_run(state)
@@ -888,6 +1195,7 @@ def cancel_run(run_id: str) -> dict:
     state = load_run(run_id)
     if state is None:
         raise ValueError(f"No run '{run_id}'.")
+    _signal(run_id, "cancel")
     state["status"] = "cancelled"
     state["park"] = None
     state["queue"] = []
@@ -899,12 +1207,18 @@ def cancel_run(run_id: str) -> dict:
 def rearm_parked() -> None:
     """On gateway start: resume running work, wake due timers, leave humans parked."""
     tick_timers()
+    tick_polls()
     for state in list_runs():
         status = state.get("status")
         if status == "running":
             _spawn(state["runId"])
             continue
         if status != "waiting_world":
+            continue
+        park = state.get("park") or {}
+        if park.get("until") == "poll" and park.get("url"):
+            if not _http_ok(park["url"]):
+                _arm_poll(state["runId"], float(park.get("interval") or 60), park["url"])
             continue
         wake = state.get("wakeAt")
         if wake is None:

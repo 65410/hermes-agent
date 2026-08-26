@@ -52,6 +52,10 @@ def trigger_of(doc: dict) -> dict | None:
 
 
 def route_name(workflow_id: str) -> str:
+    """Path segment. Once a hook is minted this is unguessable — that is the auth."""
+    token = secret_for(workflow_id)
+    if token:
+        return f"wf-{token}"
     return f"{ROUTE_PREFIX}{workflow_id}"
 
 
@@ -62,6 +66,34 @@ def webhook_secret(workflow_id: str) -> str:
     secret = secrets.token_hex(16)
     put_secret(workflow_id, secret)
     return secret
+
+
+def hook_url(workflow_id: str) -> str:
+    try:
+        from hermes_cli.webhook import _get_webhook_base_url
+
+        base = _get_webhook_base_url()
+    except Exception:
+        base = "http://localhost:8644"
+    return f"{base}/webhooks/{route_name(workflow_id)}"
+
+
+def hook_info(workflow_id: str) -> dict[str, str]:
+    secret = webhook_secret(workflow_id)
+    return {"route": route_name(workflow_id), "secret": secret, "url": hook_url(workflow_id)}
+
+
+def ensure_webhook_platform() -> None:
+    """Turn the existing webhook adapter on so the URL is a real listener."""
+    try:
+        from hermes_cli.config import write_platform_config_field
+        from hermes_cli.webhook import _is_webhook_enabled
+
+        if _is_webhook_enabled():
+            return
+        write_platform_config_field("webhook", "enabled", True)
+    except Exception as exc:
+        logger.debug("could not enable webhook platform: %s", exc)
 
 
 def _subscriptions_path() -> Path:
@@ -89,19 +121,21 @@ def sync_webhook_routes(docs: list[dict] | None = None) -> dict[str, str]:
         if trigger is None or trigger["type"] != "webhook":
             continue
         wid = doc["id"]
-        name = route_name(wid)
-        secret = webhook_secret(wid)
-        wanted[name] = {
-            "secret": secret,
+        info = hook_info(wid)
+        wanted[info["route"]] = {
+            "secret": info["secret"],
             "workflow": wid,
             "prompt": "",
+            "script": _write_hook_script(wid),
             _OWNED: True,
         }
-        secrets_out[wid] = secret
+        secrets_out[wid] = info
     existing = _read_subscriptions()
     kept = {k: v for k, v in existing.items() if not (isinstance(v, dict) and v.get(_OWNED))}
     merged = {**kept, **wanted}
     atomic_write_text(_subscriptions_path(), json.dumps(merged, indent=2, ensure_ascii=False) + "\n")
+    if wanted:
+        ensure_webhook_platform()
     return secrets_out
 
 
@@ -122,6 +156,41 @@ def _script_path(workflow_id: str) -> Path:
     scripts = get_hermes_home() / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     return scripts / f"workflow_{workflow_id}.py"
+
+
+def _write_hook_script(workflow_id: str) -> str:
+    """A route script the existing webhook adapter already knows how to run.
+
+    In-process ``start_run`` is the new adapter's path. This file is for a
+    gateway that hasn't picked up that branch yet — it still executes ``script``.
+    """
+    path = get_hermes_home() / "scripts" / f"workflow_hook_{workflow_id}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "import json, sys\n"
+        "from workflow.runner import start_from_trigger\n"
+        "payload = json.loads(sys.stdin.read() or '{}')\n"
+        f"start_from_trigger({workflow_id!r}, source='webhook', payload=payload)\n"
+        "print('[SILENT]')\n",
+        encoding="utf-8",
+    )
+    return path.name
+
+
+def workflow_id_for_route(route_name: str, route_config: dict | None = None) -> str:
+    if isinstance(route_config, dict):
+        wid = str(route_config.get("workflow") or "").strip()
+        if wid:
+            return wid
+    token = str(route_name)[3:] if str(route_name).startswith("wf-") else ""
+    if not token:
+        return ""
+    from workflow.store import load_secrets
+
+    for wid, secret in load_secrets().items():
+        if secret == token:
+            return wid
+    return ""
 
 
 def _write_tick_script(workflow_id: str) -> str:

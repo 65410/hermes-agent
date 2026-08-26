@@ -28,6 +28,9 @@ def test_webhook_trigger_registers_a_dynamic_route(tmp_path, monkeypatch):
     )
     secrets = sync_webhook_routes()
     assert "ship" in secrets
+    assert secrets["ship"]["url"].endswith(f"/webhooks/{secrets['ship']['route']}")
+    assert secrets["ship"]["route"].startswith("wf-")
+    assert secrets["ship"]["route"] != "wf:ship"
     subs = (home / "webhook_subscriptions.json").read_text(encoding="utf-8")
     assert route_name("ship") in subs
     assert '"workflow": "ship"' in subs

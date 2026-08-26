@@ -196,9 +196,27 @@ def active_run(workflow_id: str) -> dict | None:
     return found[0]
 
 
-def append_event(run_id: str, event_type: str, payload: dict | None = None) -> dict:
-    state = load_run(run_id)
-    seq = int((state or {}).get("seq") or 0)
+def _patch_run(run_id: str, **fields: Any) -> None:
+    """Write specific run fields without clobbering in-memory progress."""
+    raw = _read_json(run_path(run_id), None)
+    if not isinstance(raw, dict):
+        return
+    raw.update(fields)
+    _write_json(run_path(run_id), raw)
+
+
+def append_event(
+    run_id: str,
+    event_type: str,
+    payload: dict | None = None,
+    *,
+    seq: int | None = None,
+) -> dict:
+    """Append one jsonl line. ``seq`` is the caller's counter — do not reload
+    the run JSON and write it back, or an in-flight ``save_run`` of stale
+    ``seq`` will reuse numbers and the canvas will drop later events."""
+    if seq is None:
+        seq = int((load_run(run_id) or {}).get("seq") or 0)
     event = {
         "runId": run_id,
         "seq": seq,
@@ -210,9 +228,7 @@ def append_event(run_id: str, event_type: str, payload: dict | None = None) -> d
         path = events_path(run_id)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-        if state is not None:
-            state["seq"] = seq + 1
-            _write_json(run_path(run_id), state)
+        _patch_run(run_id, seq=seq + 1)
     sink = _event_sink
     if sink is not None:
         try:
