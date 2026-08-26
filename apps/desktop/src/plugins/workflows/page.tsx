@@ -20,52 +20,41 @@ import {
 import {
   Background,
   BackgroundVariant,
-  type Connection,
-  type Edge,
   type EdgeChange,
-  type Node,
   type NodeChange,
   Panel,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
-  useReactFlow,
-  useStore
+  useReactFlow
 } from '@xyflow/react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type AddAt, addStep, AddStepProvider, KindPicker } from './add-step'
 import { AskDialog } from './ask'
-import { lendCanvas, runOps } from './bridge'
 import { CanvasChat } from './chat'
 import { FlowDirProvider } from './direction'
 import { $currentId, $workflows, createWorkflow, saveWorkflow, type WorkflowDoc } from './documents'
 import { CutEdgeProvider, edgeTypes } from './edges'
-import {
-  connect,
-  disconnect,
-  fromScenario,
-  type Graph,
-  type OpResult,
-  removeStep,
-  runPlan,
-  stepNodes,
-  toScenario,
-  updateStep
-} from './graph'
-import type { RunControl } from './graph-tools'
+import { fromScenario, type Graph, runPlan, toScenario, updateStep } from './graph'
+import type { RunControl } from './graph-dispatch'
 import { Inspector } from './inspector'
-import { DEFAULT_DIR, type FlowDir, tidyLayout } from './layout'
+import { FIT, tidyLayout } from './layout'
 import { LiveLog } from './livelog'
 import { CANVAS_NOTE_ID, canvasNote, type NodeData, NodeLive, nodeTypes } from './nodes'
 import { RunNowProvider, usePlayer } from './player'
-import { type EdgeState, feedLine, type FeedLine, freshRuntime, type StepRuntime } from './protocol'
+import { type EdgeState, freshRuntime, type StepRuntime } from './protocol'
+import { feedLine, type FeedLine } from './protocol-feed'
 import { blankScenario, starterScenario, type StepConfig, type StepKind } from './scenario'
 import { WorkflowSwitcher } from './switcher'
 import { Timeline } from './timeline'
 import { useTourPan } from './tour-pan'
+import { useCanvasKeys } from './use-canvas-keys'
+import { useCanvasLayout } from './use-canvas-layout'
+import { useCommit } from './use-commit'
 import { useUndoRedo } from './use-undo-redo'
+import { useWiring } from './use-wiring'
 
 // Steps the agent adds mid-session have no runtime in the event stream — they
 // read as idle until the next run includes them.
@@ -75,44 +64,6 @@ const IDLE_RT: StepRuntime = freshRuntime()
 // CSS var so the run dock re-centres on what's left of the canvas.
 const INSPECTOR_REM = '26rem'
 const INSPECTOR_WIDTH = 'w-[26rem]'
-
-/** A step appeared or disappeared — not a title edit, not a wire. Those are
- *  the moments the ranks have to be redone, or the new card sits wherever
- *  freeSpot parked it and a hole stays where the old one was. */
-function sameSteps(a: Graph, b: Graph): boolean {
-  const was = stepNodes(a)
-  const now = stepNodes(b)
-
-  if (was.length !== now.length) {
-    return false
-  }
-
-  const ids = new Set(was.map(n => n.id))
-
-  return now.every(n => ids.has(n.id))
-}
-
-function laidOut(from: Graph, to: Graph, dir: FlowDir): Graph {
-  return sameSteps(from, to) ? to : { edges: to.edges, nodes: tidyLayout(to.nodes, to.edges, dir) }
-}
-
-// Keep the graph clear of the floating chrome that is ALWAYS there: the brand
-// mark up top, the timeline + composer along the bottom, the live log's lane on
-// the right. The inspector is deliberately NOT reserved for — it floats over
-// the canvas and the graph stays put, because re-framing the whole graph every
-// time you open a panel is worse than the overlap it avoids.
-const FIT = {
-  // The brand panel bottoms out at 66px (16px margin + 51px tall), so 56px
-  // left the top rank grazing it.
-  padding: { top: '78px', right: '150px', bottom: '208px', left: '40px' }
-} as const
-
-// Pace of an agent build (see `paint`). The gap is per op — slow enough to
-// read as one thing happening after another, fast enough that a three-step
-// edit isn't a cutscene. The budget caps the whole batch, so a long build
-// accelerates rather than making you sit through it.
-const PAINT_GAP_MS = 130
-const PAINT_BUDGET_MS = 2200
 
 export default function WorkflowsPage() {
   const docs = useValue($workflows)
@@ -149,7 +100,6 @@ function FirstWorkflow() {
         <PageHeaderTitle>Workflows</PageHeaderTitle>
       </PageHeader>
       <EmptyState
-        className="min-h-0 flex-1"
         action={
           <div className="flex items-center gap-2">
             <Button onClick={() => createWorkflow('Untitled workflow', blankScenario())} size="sm">
@@ -161,6 +111,7 @@ function FirstWorkflow() {
             </Button>
           </div>
         }
+        className="min-h-0 flex-1"
         description="A workflow is a graph of steps an agent runs — work, checks, branches, and the places a person has to say yes. Build one by hand, or ask for it."
         icon="type-hierarchy-sub"
         title="No workflows yet"
@@ -205,12 +156,13 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // component and throw the result away — React only keeps the first. The
   // document is fixed for this canvas's life (the page keys on its id), so
   // there's nothing for the memo to depend on.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   const seed = useMemo(() => {
     const g = fromScenario(doc.scenario)
 
     return g.nodes.length === 0 ? { ...g, nodes: [canvasNote()] } : g
   }, [])
+
   const [nodes, setNodes, onNodesChange] = useNodesState(seed.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(seed.edges)
   const [selected, setSelected] = useState<string | null>(null)
@@ -266,89 +218,12 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
     [onEdgesChange, takeSnapshot]
   )
 
-  // Two frames: the first lets React commit the new nodes, the second lets
-  // React Flow measure them. Fitting on one frame uses fallback sizes and
-  // leaves freshly added nodes tucked under the composer.
-  const refit = useCallback(() => {
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => fitView({ ...FIT, duration: 400 })))
-  }, [fitView])
-
-  // Which way the ranks run. Dagre's own `rankdir` does the work — the handles
-  // follow it (see nodes.tsx), so nothing here computes a position by hand.
-  const [dir, setDirState] = useState<FlowDir>(DEFAULT_DIR)
-  const vertical = dir === 'TB'
-  // Read by the tool bridge, which is registered once and would otherwise
-  // close over the direction the canvas had when the page mounted.
-  const dirRef = useRef(dir)
-  dirRef.current = dir
-
-  // In-flight timers for an agent build (see `paint`), and the flag that lets
-  // cards glide to their new ranks while one is playing.
-  const brush = useRef<number[]>([])
-  const [reflowing, setReflowing] = useState(false)
-
-  const tidy = useCallback(
-    (to: FlowDir = dir) => {
-      takeSnapshot()
-      setNodes(ns => tidyLayout(ns, edges, to))
-      refit()
-    },
-    [dir, edges, refit, setNodes, takeSnapshot]
-  )
-
-  // Flipping direction without re-laying out would leave every card where the
-  // other orientation put it, wired through its own neighbours — so the toggle
-  // IS a tidy, just one that changes rankdir on the way through.
-  const setDir = useCallback(
-    (to: FlowDir) => {
-      setDirState(to)
-      tidy(to)
-    },
-    [tidy]
-  )
-
-  // On-load layout only. buildInitialNodes() lays out against the fallback
-  // constants in layout.ts, which don't match the real cards, so the first
-  // paint is approximate — this re-tidies ONCE, the moment React Flow has
-  // measured every card, so what you SEE on load is already tidy.
-  //
-  // The trigger is the measurement itself, not useNodesInitialized: the
-  // signature changes the moment real dimensions land, which is precisely the
-  // instant a correct layout is possible.
-  //
-  // After that, dragging a card keeps its place. Adding or removing a step
-  // re-tidies the ranks (see `laidOut`) without touching the camera — the
-  // viewport is yours. The Tidy button is still there for a full rearrange
-  // plus a fit.
-  const didAutoTidy = useRef(false)
-  const measuredSig = nodes.map(n => `${n.id}:${n.measured?.width ?? 0}x${n.measured?.height ?? 0}`).join()
-  const allMeasured = nodes.length > 0 && nodes.every(n => n.measured?.width && n.measured?.height)
-
-  // eslint-disable-next-line no-restricted-syntax -- `didAutoTidy` is a one-shot latch, not a mirrored atom.
-  useEffect(() => {
-    if (!allMeasured || didAutoTidy.current) {
-      return
-    }
-
-    didAutoTidy.current = true
-
-    if (!nodes.some(n => n.id !== CANVAS_NOTE_ID)) {
-      // The note lives at the origin, which is the pane's top-left — narnia.
-      // fitView with maxZoom 1 pans it into the padded centre (above the
-      // composer, clear of the log) without blowing the label up to a title.
-      // Two frames: commit, then measure — same reason `refit` waits.
-      window.requestAnimationFrame(() =>
-        window.requestAnimationFrame(() => void fitView({ ...FIT, duration: 0, maxZoom: 1 }))
-      )
-
-      return
-    }
-
-    setNodes(ns => tidyLayout(ns, edges, dir))
-    refit()
-    // measuredSig is the real dependency — it changes when a card's measured
-    // size lands. eslint can't see that it stands in for `nodes`.
-  }, [allMeasured, measuredSig, dir, edges, fitView, refit, setNodes])
+  const { dir, dirRef, resetView, setDir, tidy, vertical } = useCanvasLayout({
+    edges,
+    nodes,
+    setNodes,
+    takeSnapshot
+  })
 
   // sync run state -> node.data (preserves dragged positions + edited config).
   //
@@ -447,10 +322,6 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
     [dir, draft, edges, nodes, setEdges, setNodes, takeSnapshot]
   )
 
-  // ONE commit path for every structural edit — the connect gesture, a delete,
-  // the inspector, and every tool the composer's agent calls. Undo and the
-  // transcript hang off this, so nothing can mutate the document and leave
-  // one of them behind. The inspector stays where the user put it.
   const graph = useMemo<Graph>(() => ({ nodes, edges }), [nodes, edges])
   graphRef.current = graph
 
@@ -462,242 +333,9 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
     saveWorkflow(doc.id, toScenario(graph))
   }, [doc.id, graph])
 
-  const applyOp = useCallback(
-    (op: OpResult) => {
-      if (!op.ok) {
-        return op
-      }
-
-      takeSnapshot()
-      const next = laidOut(graphRef.current, op.graph, dir)
-      setNodes(next.nodes)
-      setEdges(next.edges)
-
-      return { ...op, graph: next }
-    },
-    [dir, setEdges, setNodes, takeSnapshot]
-  )
-
-  // A batch of agent ops arrives as a BUILD, not a jump cut. Landing six steps
-  // and five wires in one frame reads as a page refresh — you can't tell what
-  // Hermes did, only that the canvas is different now. Played out, you watch
-  // it think: a step appears, a wire finds it, the graph makes room.
-  //
-  // The whole batch is still ONE undo. Stepping backwards through an agent's
-  // reasoning one node at a time is not undo, it's archaeology.
-  const paint = useCallback(
-    (frames: Graph[]) => {
-      if (!frames.length) {
-        return
-      }
-
-      // A second batch mid-build cancels the first. Its last frame already
-      // folded into the graph this one was computed from, so the pending
-      // frames are stale — and two timers writing nodes is a flicker.
-      brush.current.forEach(window.clearTimeout)
-      brush.current = []
-      takeSnapshot()
-
-      // Long batches speed up rather than outstay their welcome. Nobody wants
-      // a forty-op build to take six seconds.
-      const gap = Math.min(PAINT_GAP_MS, PAINT_BUDGET_MS / frames.length)
-
-      setReflowing(true)
-
-      frames.forEach((frame, i) => {
-        const last = i === frames.length - 1
-
-        brush.current.push(
-          window.setTimeout(
-            () => {
-              setNodes(frame.nodes)
-              setEdges(frame.edges)
-
-              if (last) {
-                setReflowing(false)
-              }
-            },
-            gap * (i + 1)
-          )
-        )
-      })
-    },
-    [setEdges, setNodes, takeSnapshot]
-  )
-
-  // Unmount cleanup only: a build timer that fires into an unmounted canvas
-  // writes state that no longer has anywhere to go.
-  useEffect(
-    () => () => {
-      brush.current.forEach(window.clearTimeout)
-    },
-    []
-  )
-
-  // Drawing a wire. The gesture had no handler at all before, which meant a
-  // deleted connector could never be put back and two existing steps could
-  // never be joined — the one hole that stopped this being a real editor.
-  const onConnect = useCallback(
-    (c: Connection) => {
-      if (aborted.current) {
-        return
-      }
-
-      applyOp(
-        connect(graph, {
-          source: c.source,
-          target: c.target,
-          sourceHandle: c.sourceHandle ?? undefined,
-          targetHandle: c.targetHandle ?? undefined
-        })
-      )
-    },
-    [applyOp, graph]
-  )
-
-  // Refuse the connection during the drag rather than after the drop, so the
-  // wire never snaps into place and then vanishes.
-  const isValidConnection = useCallback(
-    (c: Connection | Edge) =>
-      !!c.source &&
-      !!c.target &&
-      c.source !== c.target &&
-      !edges.some(e => e.source === c.source && e.target === c.target),
-    [edges]
-  )
-
-  // Dragging a live endpoint onto another port re-routes rather than forcing a
-  // cut-then-draw; dragging it into empty canvas cuts the wire.
-  //
-  // React Flow only tells you a reconnect LANDED. Dropping on nothing fires
-  // nothing at all, so the wire silently springs back and the obvious way to
-  // unplug something does nothing. The flag is the documented way to tell the
-  // two endings apart: onReconnect marks it handled, and whatever reaches
-  // onReconnectEnd unmarked was dropped in space.
-  const landed = useRef(true)
-
-  const onReconnectStart = useCallback(() => {
-    landed.current = false
-  }, [])
-
-  const onReconnect = useCallback(
-    (old: Edge, c: Connection) => {
-      landed.current = true
-
-      if (aborted.current) {
-        return
-      }
-
-      const cut = disconnect(graph, old.id)
-
-      if (!cut.ok) {
-        return
-      }
-
-      applyOp(
-        connect(cut.graph, {
-          source: c.source,
-          target: c.target,
-          sourceHandle: c.sourceHandle ?? undefined,
-          targetHandle: c.targetHandle ?? undefined
-        })
-      )
-    },
-    [applyOp, graph]
-  )
-
-  const onReconnectEnd = useCallback(
-    (_: unknown, edge: Edge) => {
-      if (!landed.current) {
-        applyOp(disconnect(graph, edge.id))
-      }
-
-      landed.current = true
-    },
-    [applyOp, graph]
-  )
-
-  // Escape drops the wire you're dragging. React Flow has no abort — the drag
-  // only ends on pointerup — so we fake the pointerup and flag the drop as one
-  // to ignore. Both flags matter: `aborted` stops a wire being drawn when you
-  // happen to be over a valid port, and `landed` stops a reconnect being read
-  // as dropped-in-space, which would cut the wire you were trying to keep.
-  const aborted = useRef(false)
-  const connecting = useStore(s => s.connection.inProgress)
-
-  const onConnectStart = useCallback(() => {
-    aborted.current = false
-  }, [])
-
-  const onConnectEnd = useCallback(() => {
-    aborted.current = false
-  }, [])
-
-  // eslint-disable-next-line no-restricted-syntax -- the ref writes are inside the key handler, not a mirror of `connecting`.
-  useEffect(() => {
-    if (!connecting) {
-      return
-    }
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') {
-        return
-      }
-
-      e.preventDefault()
-      e.stopPropagation()
-      aborted.current = true
-      landed.current = true
-      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-    }
-
-    // Capture, so the drag dies before anything else reads the same Escape.
-    window.addEventListener('keydown', onKey, true)
-
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [connecting])
-
-  // Deleting goes through the same primitive as the tools, so the keyboard and
-  // an agent heal the flow identically. Returning false stops React Flow from
-  // also removing what we've already removed.
-  const onBeforeDelete = useCallback(
-    async ({ nodes: dropNodes, edges: dropEdges }: { nodes: Node[]; edges: Edge[] }) => {
-      if (!dropNodes.length) {
-        return true
-      }
-
-      let next: Graph = graph
-
-      for (const n of dropNodes) {
-        const op = removeStep(next, n.id)
-
-        if (op.ok) {
-          next = op.graph
-        }
-      }
-
-      if (dropEdges.length) {
-        next = {
-          ...next,
-          edges: next.edges.filter(e => !dropEdges.some(d => d.id === e.id))
-        }
-      }
-
-      applyOp({ ok: true, graph: next, message: '' })
-
-      return false
-    },
-    [applyOp, graph]
-  )
-
-  const cutEdge = useCallback((id: string) => applyOp(disconnect(graph, id)), [applyOp, graph])
-
-  const removeNode = useCallback((id: string) => applyOp(removeStep(graph, id)), [applyOp, graph])
-
-  // What `run_control` drives. Held in a ref for the bridge below, for the
-  // same reason the graph is: the bridge registers once per canvas, and a
-  // control that changed identity every frame would re-register through every
-  // drag.
+  // What `run_control` drives. Held in a ref for the bridge, for the same
+  // reason the graph is: the bridge registers once per canvas, and a control
+  // that changed identity every frame would re-register through every drag.
   const run = useMemo<RunControl>(
     () => ({
       running: player.running,
@@ -713,94 +351,31 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   const runRef = useRef(run)
   runRef.current = run
 
-  // Hermes edits the canvas through here. While it's on screen the `workflow`
-  // tool applies ops to the LIVE graph rather than the stored copy behind it,
-  // so a chat turn paints the same way a hand edit does. Off screen the
-  // bridge falls back to the document; you see it when you come back.
-  useEffect(
-    () =>
-      lendCanvas({
-        id: doc.id,
-        apply: ops => {
-          const from = graphRef.current
-          const out = runOps(from, runRef.current, ops, dirRef.current)
+  const { applyOp, reflowing } = useCommit({
+    dir,
+    dirRef,
+    docId: doc.id,
+    graphRef,
+    runRef,
+    setEdges,
+    setNodes,
+    takeSnapshot
+  })
 
-          if (out.graph === from) {
-            return out
-          }
+  const {
+    cutEdge,
+    isValidConnection,
+    onBeforeDelete,
+    onConnect,
+    onConnectEnd,
+    onConnectStart,
+    onReconnect,
+    onReconnectEnd,
+    onReconnectStart,
+    removeNode
+  } = useWiring({ applyOp, graph })
 
-          // Add/remove re-tidies the ranks as the build plays. The camera
-          // stays put — this is not a fitView.
-          const frames = out.results.filter(r => r.ok).map(r => laidOut(from, r.graph, dirRef.current))
-
-          paint(frames)
-
-          return { graph: frames.at(-1) ?? out.graph, results: out.results }
-        }
-      }),
-    [doc.id, paint]
-  )
-
-  const resetView = useCallback(() => {
-    const empty = !nodes.some(n => n.id !== CANVAS_NOTE_ID)
-
-    window.requestAnimationFrame(() =>
-      window.requestAnimationFrame(() => void fitView({ ...FIT, duration: 400, maxZoom: empty ? 1 : undefined }))
-    )
-  }, [fitView, nodes])
-
-  const transport = useCallback(() => {
-    // Parked on a person. Nothing the transport can do will move the run —
-    // only the answer will — so the key that means "carry on" puts the
-    // question back in front of you rather than doing nothing.
-    if (player.asking) {
-      player.reveal()
-
-      return
-    }
-
-    if (!player.running) {
-      player.start()
-    } else if (player.pauseState === 'none') {
-      player.requestPause()
-    } else if (player.pauseState === 'paused') {
-      player.resume()
-    }
-    // "pausing": the request is already in flight — the key waits with you.
-  }, [player])
-
-  // Space → run / pause / resume. K still does the same. Cmd/Ctrl+Shift+L
-  // tidies. Camera is scroll/pinch + the tidy/fit button — Space is a verb.
-  // (Undo/redo keys live in useUndoRedo.)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
-        e.preventDefault()
-        tidy()
-
-        return
-      }
-
-      if (e.metaKey || e.ctrlKey || e.altKey) {
-        return
-      }
-
-      const t = e.target as HTMLElement | null
-
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) {
-        return
-      }
-
-      if (e.code === 'Space' || e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        transport()
-      }
-    }
-
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [tidy, transport])
+  useCanvasKeys({ player, tidy })
 
   const selNode = useMemo(
     () => (selected ? nodes.find(n => n.id === selected && (n.data as NodeData).def) : null),

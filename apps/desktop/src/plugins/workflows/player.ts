@@ -5,9 +5,21 @@
 import { host } from '@hermes/plugin-sdk'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { $workflows, noteRun } from './documents'
+import { noteRun } from './documents'
 import type { RunPlan } from './graph'
-import { type Checkpoint, checkpointsOf, type ProtoEvent, reduceEvents, type RunShape, type World } from './protocol'
+import { type Checkpoint, type ProtoEvent, type RunShape, type World } from './protocol'
+import { checkpointsOf, reduceEvents } from './protocol-world'
+import {
+  activeRun,
+  askInCanvas,
+  cancelRun,
+  LIVE,
+  pauseRun,
+  respondRun,
+  resumeRun,
+  runEvents,
+  startRun
+} from './run-rpc'
 import type { OnFail } from './scenario'
 import { demandComplete } from './validation'
 
@@ -23,10 +35,9 @@ const RunNowCtx = createContext<RunNow>({
   fireWebhook: async () => {},
   running: false
 })
+
 export const RunNowProvider = RunNowCtx.Provider
 export const useRunNow = () => useContext(RunNowCtx)
-
-const LIVE: ReadonlySet<string> = new Set(['running', 'paused', 'waiting_human', 'waiting_world'])
 
 function sameEvent(a: ProtoEvent, b: ProtoEvent) {
   return a.runId === b.runId && a.seq === b.seq && a.type === b.type && a.ts === b.ts
@@ -34,37 +45,6 @@ function sameEvent(a: ProtoEvent, b: ProtoEvent) {
 
 function runIsFinished(events: ProtoEvent[]) {
   return events.some(e => e.type === 'RunFinished')
-}
-
-/** Hermes asks in the canvas thread — missing model, a 404, something the
- *  step cannot invent. Hidden so it isn't typed as a user bubble. */
-function askInCanvas(workflowId: string, nodeId: string, prompt: string): void {
-  const stored = $workflows.get().find(d => d.id === workflowId)?.sessionId
-
-  if (!stored) {
-    return
-  }
-
-  void host
-    .request<{ session_id?: string }>('session.resume', { session_id: stored })
-    .then(res => {
-      const sid = res.session_id
-
-      if (!sid) {
-        return
-      }
-
-      return host.request('prompt.submit', {
-        display_kind: 'hidden',
-        session_id: sid,
-        text:
-          `The "${nodeId}" step on this workflow could not run:\n\n${prompt}\n\n` +
-          'Explain that in this thread. If something is missing or confusing ' +
-          '(a model, a Figma board, credentials, a path), ask me — use clarify ' +
-          'for a short choice list. Do not pretend the step succeeded.'
-      })
-    })
-    .catch(() => {})
 }
 
 /** none → (pause requested) pausing → (boundary reached) paused → resume. */
@@ -189,14 +169,18 @@ export function usePlayer(planOf: () => RunPlan): Player {
     liveRun.current = runId
     runIdRef.current = runId
     setEvents(incoming)
+
     if (runIsFinished(incoming)) {
       setRunning(false)
       setPause('none')
     }
+
     const waiting = [...incoming].reverse().find(e => e.type === 'HumanWaiting')
+
     const answered = waiting
       ? incoming.some(e => e.type === 'HumanResponded' && e.payload.nodeId === waiting.payload.nodeId && e.seq > waiting.seq)
       : false
+
     ask(!answered && waiting?.type === 'HumanWaiting' ? waiting.payload : null)
   }, [])
 
@@ -205,10 +189,9 @@ export function usePlayer(planOf: () => RunPlan): Player {
       liveRun.current = runId
       runIdRef.current = runId
       noteRun(workflowId)
-      const snap = await host.request<{ events?: ProtoEvent[] }>('workflow.run.events', {
-        runId,
-        after: -1
-      })
+
+      const snap = await runEvents(runId)
+
       if (liveRun.current === runId) {
         adoptLive(runId, snap.events ?? [])
       }
@@ -235,12 +218,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
     }
 
     setRunning(true)
-    void host
-      .request<{ runId: string }>('workflow.run.start', {
-        workflowId: plan.id,
-        scenario: plan.scenario,
-        source: 'manual'
-      })
+    void startRun(plan, 'manual')
       .then(res => adoptRun(res.runId, plan.id))
       .catch(() => {
         liveRun.current = null
@@ -250,6 +228,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
   const fireWebhook = useCallback(async () => {
     const plan = planOf()
+
     if (!plan.id) {
       throw new Error('No workflow to fire')
     }
@@ -262,12 +241,8 @@ export function usePlayer(planOf: () => RunPlan): Player {
     setRunning(true)
 
     try {
-      const res = await host.request<{ runId: string }>('workflow.run.start', {
-        workflowId: plan.id,
-        scenario: plan.scenario,
-        payload: { ok: true },
-        source: 'webhook'
-      })
+      const res = await startRun(plan, 'webhook', { ok: true })
+
       await adoptRun(res.runId, plan.id)
     } catch (err) {
       liveRun.current = null
@@ -278,9 +253,11 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
   const reset = useCallback(() => {
     const id = liveRun.current
+
     if (id) {
-      void host.request('workflow.run.cancel', { runId: id }).catch(() => {})
+      void cancelRun(id).catch(() => {})
     }
+
     liveRun.current = null
     setPause('none')
     ask(null)
@@ -297,8 +274,9 @@ export function usePlayer(planOf: () => RunPlan): Player {
     setEvents([])
     setHead(null)
     const kick = () => start()
+
     if (id) {
-      void host.request('workflow.run.cancel', { runId: id }).then(kick, kick)
+      void cancelRun(id).then(kick, kick)
     } else {
       kick()
     }
@@ -311,13 +289,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
       return
     }
 
-    void host
-      .request('workflow.run.respond', {
-        runId: liveRun.current,
-        nodeId: q.nodeId,
-        decision,
-        by: q.who
-      })
+    void respondRun(liveRun.current, q.nodeId, decision, q.who)
       .then(() => ask(null))
       .catch(() => {})
   }, [])
@@ -329,11 +301,11 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
     const id = liveRun.current
     setPause('pausing')
-    void host
-      .request<{ status?: string }>('workflow.run.pause', { runId: id })
+    void pauseRun(id)
       .then(res => {
         if (res.status === 'paused') {
           setPause('paused')
+
           return
         }
 
@@ -352,7 +324,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
     setHead(null)
     setPause('none')
-    void host.request('workflow.run.resume', { runId: liveRun.current }).catch(() => {})
+    void resumeRun(liveRun.current).catch(() => {})
   }, [])
 
   const seek = useCallback((h: number) => {
@@ -421,6 +393,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
   useEffect(() => {
     return host.onEvent('workflow.run', event => {
       const incoming = event.payload as ProtoEvent | undefined
+
       if (!incoming?.runId || incoming.runId !== liveRun.current) {
         return
       }
@@ -452,15 +425,13 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
   useEffect(() => {
     const plan = planOf()
+
     if (!plan.id) {
       return
     }
 
     let cancelled = false
-    void host
-      .request<{ runId?: string; run?: { status: string }; events?: ProtoEvent[] }>('workflow.run.active', {
-        workflowId: plan.id
-      })
+    void activeRun(plan.id)
       .then(res => {
         if (cancelled || !res.runId || !res.run || !LIVE.has(res.run.status)) {
           return
@@ -470,6 +441,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
         adoptLive(res.runId, res.events ?? [])
         setRunning(true)
         setHead(null)
+
         if (res.run.status === 'paused') {
           setPause('paused')
         }

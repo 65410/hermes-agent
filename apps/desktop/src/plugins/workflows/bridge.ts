@@ -26,7 +26,8 @@ import { host } from '@hermes/plugin-sdk'
 
 import { $currentId, $workflows, createWorkflow, saveWorkflow, type WorkflowDoc } from './documents'
 import { fromScenario, type Graph, type OpResult, toScenario, validate } from './graph'
-import { callTool, GRAPH_TOOLS, type RunControl } from './graph-tools'
+import { callTool, type RunControl } from './graph-dispatch'
+import { GRAPH_TOOLS } from './graph-tools'
 import { DEFAULT_DIR, type FlowDir } from './layout'
 import { blankScenario } from './scenario'
 

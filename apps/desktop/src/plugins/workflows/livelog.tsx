@@ -11,7 +11,7 @@
 // edge it hangs off.
 import { useEffect, useRef, useState } from 'react'
 
-import type { FeedLine } from './protocol'
+import type { FeedLine } from './protocol-feed'
 
 const LIFETIME_MS = 3400
 // Six at a time — a glance of the last few beats, not a second event log.

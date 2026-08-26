@@ -22,6 +22,17 @@ const ORPHAN_GAP = 64
 /** One rank over: a card's width plus the gap Dagre would leave. */
 export const STEP = CARD_W + RANK_GAP
 
+// Keep the graph clear of the floating chrome that is ALWAYS there: the brand
+// mark up top, the timeline + composer along the bottom, the live log's lane on
+// the right. The inspector is deliberately NOT reserved for — it floats over
+// the canvas and the graph stays put, because re-framing the whole graph every
+// time you open a panel is worse than the overlap it avoids.
+export const FIT = {
+  // The brand panel bottoms out at 66px (16px margin + 51px tall), so 56px
+  // left the top rank grazing it.
+  padding: { top: '78px', right: '150px', bottom: '208px', left: '40px' }
+} as const
+
 export const widthOf = (n: Node) => n.measured?.width ?? CARD_W
 export const heightOf = (n: Node) => n.measured?.height ?? FALLBACK_H
 
