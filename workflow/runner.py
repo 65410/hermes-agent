@@ -4,19 +4,35 @@ Topology is real. Work is real when ``execute_fn`` calls a model; tests
 inject a stub. Human and wait steps persist a park so closing the app
 does not lose the run — resume via ``respond`` / ``resolve_event`` /
 ``tick_timers``.
+
+This file is the loop and the doors into it. What it walks over, waits on and
+stands in for lives beside it, so each can be read and tested without the loop:
+
+    topology  reading the authored scenario — steps, wires, conditions
+    runtime   the per-run plumbing every thread shares — lock, seq, signals
+    waits     the steps that stop, and the clocks that start them again
+    fake      the recording stand-in that calls no model
 """
 
 from __future__ import annotations
 
-import re
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
+from workflow import fake
+from workflow.runtime import (
+    absorb_signals,
+    clear_signal,
+    emit,
+    fail_dead_run,
+    lock_for,
+    signal,
+    spawn,
+    thread_alive,
+)
 from workflow.store import (
     active_run,
-    append_event,
     get_document,
     list_runs,
     load_documents,
@@ -26,39 +42,30 @@ from workflow.store import (
     save_run,
     upsert_document,
 )
+from workflow.topology import (
+    between,
+    by_id,
+    config_of,
+    holds,
+    kind_of,
+    preds,
+    scenario_of,
+    steps_of,
+    succs,
+    title_of,
+)
+from workflow.waits import (
+    finish_wait,
+    park_human,
+    park_wait,
+    rearm,
+    tick_polls,
+    tick_timers,
+)
 
 ExecuteFn = Callable[[str, str, Any, dict], dict]
 
 _execute_fn: ExecuteFn | None = None
-_threads: dict[str, threading.Thread] = {}
-_thread_lock = threading.Lock()
-_run_locks: dict[str, threading.Lock] = {}
-_run_locks_guard = threading.Lock()
-_timer_threads: dict[str, threading.Thread] = {}
-# Pause/cancel from the RPC thread. The runner holds its own state dict and
-# save_run's it — writing the flag only to disk gets clobbered, so the live
-# loop never sees it.
-_signals: dict[str, str] = {}
-_signals_lock = threading.Lock()
-
-
-def _signal(run_id: str, kind: str) -> None:
-    with _signals_lock:
-        _signals[run_id] = kind
-
-
-def _clear_signal(run_id: str) -> None:
-    with _signals_lock:
-        _signals.pop(run_id, None)
-
-
-def _absorb_signals(state: dict) -> None:
-    with _signals_lock:
-        kind = _signals.get(state["runId"])
-    if kind == "pause":
-        state["pauseRequested"] = True
-    elif kind == "cancel":
-        state["status"] = "cancelled"
 
 
 def set_execute_fn(fn: ExecuteFn | None) -> None:
@@ -66,167 +73,9 @@ def set_execute_fn(fn: ExecuteFn | None) -> None:
     _execute_fn = fn
 
 
-def _lock_for(run_id: str) -> threading.Lock:
-    with _run_locks_guard:
-        lock = _run_locks.get(run_id)
-        if lock is None:
-            lock = threading.Lock()
-            _run_locks[run_id] = lock
-        return lock
-
-
-def _scenario_of(doc_or_scenario: dict) -> dict:
-    if "steps" in doc_or_scenario and "edges" in doc_or_scenario:
-        return doc_or_scenario
-    scenario = doc_or_scenario.get("scenario")
-    return scenario if isinstance(scenario, dict) else {"steps": [], "edges": []}
-
-
-def _steps(scenario: dict) -> list[dict]:
-    steps = scenario.get("steps") or []
-    return [s for s in steps if isinstance(s, dict) and s.get("id")]
-
-
-def _edges(scenario: dict) -> list[dict]:
-    edges = scenario.get("edges") or []
-    return [e for e in edges if isinstance(e, dict) and e.get("source") and e.get("target")]
-
-
-def _by_id(scenario: dict) -> dict[str, dict]:
-    return {s["id"]: s for s in _steps(scenario)}
-
-
-def _is_loop(edge: dict) -> bool:
-    return bool(edge.get("loop"))
-
-
-def _preds(scenario: dict, node_id: str, *, loops: bool = False) -> list[str]:
-    """Incoming wires that must have run before ``node_id`` can. Rework loops
-    are not inputs — they fire later, from a gate that already ran."""
-    return [
-        e["source"]
-        for e in _edges(scenario)
-        if e["target"] == node_id and (loops or not _is_loop(e))
-    ]
-
-
-def _succs(scenario: dict, node_id: str, handle: str | None = None) -> list[str]:
-    out = []
-    for edge in _edges(scenario):
-        if edge["source"] != node_id:
-            continue
-        if handle is not None and (edge.get("sourceHandle") or "out") != handle:
-            continue
-        out.append(edge["target"])
-    return out
-
-
-def _kind(step: dict) -> str:
-    return str(step.get("kind") or step.get("def", {}).get("kind") or "agent")
-
-
-def _config(step: dict) -> dict:
-    if isinstance(step.get("config"), dict):
-        return step["config"]
-    return {k: v for k, v in step.items() if k not in {"id", "kind", "def"}}
-
-
-def _title(step: dict) -> str:
-    cfg = _config(step)
-    return str(cfg.get("title") or step.get("title") or step["id"])
-
-
-def parse_poll(spec: str) -> tuple[float, str] | None:
-    """Interval + URL, or None when the spec is an event name on the bus."""
-    text = (spec or "").strip()
-    every = re.match(
-        r"^(?:every\s+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)\s+(https?://\S+)",
-        text,
-        re.I,
-    )
-    if every:
-        value = float(every.group(1))
-        unit = every.group(2)[0].lower()
-        seconds = value * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
-        return max(1.0, seconds), every.group(3)
-    if re.match(r"^https?://", text, re.I):
-        return 60.0, text
-    return None
-
-
-def parse_wait_seconds(spec: str) -> float | None:
-    text = (spec or "").strip().lower()
-    every = re.match(r"^every\s+(\d+(?:\.\d+)?)\s*([smhd])", text)
-    match = every or re.match(r"^(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)\b", text)
-    if not match:
-        return None
-    value = float(match.group(1))
-    unit = match.group(2)[0]
-    return value * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
-
-
-def _holds(when: dict, inputs: list[dict]) -> bool:
-    mode = when.get("mode") or "always"
-    if mode == "always":
-        return True
-    if mode == "all-pass":
-        return bool(inputs) and all(i.get("verdict") == "PASS" for i in inputs)
-    if mode == "any-fail":
-        return any(i.get("verdict") == "FAIL" for i in inputs)
-    if mode == "checks":
-        checks = when.get("checks") or []
-        hits = []
-        for check in checks:
-            got = next((i.get("verdict") for i in inputs if i.get("nodeId") == check.get("step")), None)
-            is_match = str(got) == str(check.get("value"))
-            hits.append(is_match if check.get("op", "is") == "is" else not is_match)
-        join = when.get("join") or "all"
-        return all(hits) if join == "all" else any(hits)
-    if mode == "prose":
-        return bool(inputs) and all(i.get("verdict") != "FAIL" for i in inputs)
-    return False
-
-
-def _between(scenario: dict, start: str, end: str) -> list[str]:
-    body: set[str] = set()
-
-    def walk(node_id: str, path: list[str]) -> bool:
-        if node_id == end:
-            body.update([*path, node_id])
-            return True
-        if node_id in path:
-            return False
-        return any(walk(target, [*path, node_id]) for target in _succs(scenario, node_id))
-
-    walk(start, [])
-    return list(body)
-
-
-def _emit(state: dict, event_type: str, payload: dict | None = None) -> dict:
-    seq = int(state.get("seq") or 0)
-    event = append_event(state["runId"], event_type, payload, seq=seq)
-    state["seq"] = seq + 1
-    return event
-
-
-def _thread_alive(run_id: str) -> bool:
-    with _thread_lock:
-        thread = _threads.get(run_id)
-    return thread is not None and thread.is_alive()
-
-
-def _fail_dead_run(state: dict) -> dict:
-    state["status"] = "failed"
-    state["failed"] = True
-    state["pauseRequested"] = False
-    save_run(state)
-    _emit(state, "RunFinished", {"state": "failed", "error": "runner process died"})
-    return load_run(state["runId"]) or state
-
-
 def _context_for(state: dict, node_id: str) -> str:
     parts = []
-    for pred in _preds(state["scenario"], node_id, loops=True):
+    for pred in preds(state["scenario"], node_id, loops=True):
         summary = (state.get("summaries") or {}).get(pred)
         output = (state.get("outputs") or {}).get(pred)
         if summary:
@@ -282,7 +131,7 @@ def start_run(
     if scenario is None:
         if doc is None:
             raise ValueError(f"No workflow called '{workflow_id}'.")
-        scenario = _scenario_of(doc)
+        scenario = scenario_of(doc)
     else:
         if doc is not None:
             upsert_document({**doc, "scenario": scenario})
@@ -292,23 +141,23 @@ def start_run(
     name = (doc or {}).get("name") or workflow_id
     existing = active_run(workflow_id)
     if existing is not None:
-        if existing.get("status") == "running" and not _thread_alive(existing["runId"]):
-            _fail_dead_run(existing)
+        if existing.get("status") == "running" and not thread_alive(existing["runId"]):
+            fail_dead_run(existing)
         else:
             return existing
 
     state = _fresh_state(workflow_id, scenario, payload, source, name)
     if fake:
         state["fake"] = True
-    steps = _steps(scenario)
-    entries = [s["id"] for s in steps if not _preds(scenario, s["id"])]
+    steps = steps_of(scenario)
+    entries = [s["id"] for s in steps if not preds(scenario, s["id"])]
     if not entries and steps:
         entries = [steps[0]["id"]]
     state["queue"] = list(entries)
     save_run(state)
-    _emit(state, "RunStarted", {"scenario": name})
+    emit(state, "RunStarted", {"scenario": name})
     if background:
-        _spawn(state["runId"], execute_fn)
+        spawn(state["runId"], execute_fn)
     else:
         advance(state["runId"], execute_fn=execute_fn)
     return load_run(state["runId"]) or state
@@ -336,11 +185,11 @@ def start_matching(
     if not needle:
         return started
     for doc in load_documents()["docs"]:
-        scenario = _scenario_of(doc)
-        for step in _steps(scenario):
-            if _kind(step) != "trigger":
+        scenario = scenario_of(doc)
+        for step in steps_of(scenario):
+            if kind_of(step) != "trigger":
                 continue
-            on = _config(step).get("on") or {}
+            on = config_of(step).get("on") or {}
             if on.get("type") != "event":
                 continue
             if str(on.get("spec") or "").strip().lower() != needle:
@@ -360,27 +209,8 @@ def start_matching(
     return started
 
 
-def _spawn(run_id: str, execute_fn: ExecuteFn | None = None) -> None:
-    def work() -> None:
-        try:
-            advance(run_id, execute_fn=execute_fn)
-        except Exception as exc:
-            state = load_run(run_id)
-            if state is None:
-                return
-            state["status"] = "failed"
-            state["failed"] = True
-            save_run(state)
-            _emit(state, "RunFinished", {"state": "failed", "error": str(exc)})
-
-    thread = threading.Thread(target=work, name=f"workflow-{run_id}", daemon=True)
-    with _thread_lock:
-        _threads[run_id] = thread
-    thread.start()
-
-
 def advance(run_id: str, *, execute_fn: ExecuteFn | None = None) -> dict:
-    with _lock_for(run_id):
+    with lock_for(run_id):
         return _advance(run_id, execute_fn)
 
 
@@ -397,7 +227,7 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
 
     fn = execute_fn or _execute_fn
     scenario = state["scenario"]
-    by_id = _by_id(scenario)
+    steps = by_id(scenario)
 
     leftover = [node_id for node_id in (state.get("inFlight") or []) if node_id not in state["ran"] and node_id not in state["queue"]]
     if leftover:
@@ -409,11 +239,11 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
         state["status"] = "paused"
         state["inFlight"] = []
         save_run(state)
-        _emit(state, "RunPaused", {})
+        emit(state, "RunPaused", {})
         return state
 
     while state["queue"] and state.get("status") == "running":
-        _absorb_signals(state)
+        absorb_signals(state)
         if state.get("pauseRequested"):
             return park_pause()
 
@@ -422,7 +252,7 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
         ready = [
             node_id
             for node_id in state["queue"]
-            if all(pred in ran or pred in satisfied or pred not in by_id for pred in _preds(scenario, node_id))
+            if all(pred in ran or pred in satisfied or pred not in steps for pred in preds(scenario, node_id))
         ]
         if not ready:
             break
@@ -433,41 +263,43 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
         routed: list[str] = []
         halted = False
 
-        def kind_of(node_id: str) -> str:
-            step = by_id.get(node_id)
-            return _kind(step) if step else ""
+        ready_by_kind: dict[str, list[str]] = {}
+        for node_id in ready:
+            step = steps.get(node_id)
+            if step:
+                ready_by_kind.setdefault(kind_of(step), []).append(node_id)
 
-        triggers = [n for n in ready if kind_of(n) == "trigger"]
-        agents = [n for n in ready if kind_of(n) == "agent"]
-        gates = [n for n in ready if kind_of(n) == "gate"]
-        waits = [n for n in ready if kind_of(n) == "wait"]
-        humans = [n for n in ready if kind_of(n) == "human"]
+        triggers = ready_by_kind.get("trigger", [])
+        agents = ready_by_kind.get("agent", [])
+        gates = ready_by_kind.get("gate", [])
+        waits = ready_by_kind.get("wait", [])
+        humans = ready_by_kind.get("human", [])
 
         for node_id in triggers:
-            step = by_id[node_id]
+            step = steps[node_id]
             iteration = int((state["take"].get(node_id) or 0))
-            _emit(state, "NodePending", {"nodeId": node_id, "iteration": iteration})
+            emit(state, "NodePending", {"nodeId": node_id, "iteration": iteration})
             _run_trigger(state, step, iteration)
-            routed.extend(_succs(scenario, node_id))
+            routed.extend(succs(scenario, node_id))
             state["inFlight"] = [x for x in state["inFlight"] if x != node_id]
 
         if agents:
-            extra, stop = _run_agents(state, [by_id[n] for n in agents], fn)
+            extra, stop = _run_agents(state, [steps[n] for n in agents], fn)
             routed.extend(extra)
             halted = halted or stop
             state["inFlight"] = [x for x in state["inFlight"] if x not in agents]
 
-        _absorb_signals(state)
+        absorb_signals(state)
         if state.get("pauseRequested"):
             for nxt in routed:
-                if nxt in by_id and nxt not in state["queue"]:
+                if nxt in steps and nxt not in state["queue"]:
                     state["queue"].append(nxt)
             return park_pause()
 
         for node_id in gates:
-            step = by_id[node_id]
+            step = steps[node_id]
             iteration = int((state["take"].get(node_id) or 0))
-            _emit(state, "NodePending", {"nodeId": node_id, "iteration": iteration})
+            emit(state, "NodePending", {"nodeId": node_id, "iteration": iteration})
             extra, stop = _run_gate(state, step, iteration, fn)
             routed.extend(extra)
             if stop:
@@ -476,16 +308,16 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
 
         parked = False
         for node_id in waits + humans:
-            step = by_id[node_id]
+            step = steps[node_id]
             iteration = int((state["take"].get(node_id) or 0))
-            _emit(state, "NodePending", {"nodeId": node_id, "iteration": iteration})
-            if kind_of(node_id) == "wait":
-                if _park_wait(state, step, iteration):
+            emit(state, "NodePending", {"nodeId": node_id, "iteration": iteration})
+            if kind_of(step) == "wait":
+                if park_wait(state, step, iteration):
                     parked = True
                 else:
-                    routed.extend(_succs(scenario, node_id))
+                    routed.extend(succs(scenario, node_id))
             else:
-                _park_human(state, step, iteration)
+                park_human(state, step, iteration)
                 parked = True
             state["inFlight"] = [x for x in state["inFlight"] if x != node_id]
             if parked:
@@ -497,7 +329,7 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
                 return state
 
         for nxt in routed:
-            if nxt in by_id and nxt not in state["queue"]:
+            if nxt in steps and nxt not in state["queue"]:
                 state["queue"].append(nxt)
 
         state["inFlight"] = []
@@ -513,7 +345,7 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
     leftover = [node_id for node_id in state["queue"] if node_id not in state["ran"]]
     if leftover and not state.get("failed"):
         state["failed"] = True
-        _emit(
+        emit(
             state,
             "NodeFailed",
             {
@@ -525,22 +357,22 @@ def _advance(run_id: str, execute_fn: ExecuteFn | None) -> dict:
 
     state["status"] = "failed" if state.get("failed") else "succeeded"
     save_run(state)
-    _emit(state, "RunFinished", {"state": "failed" if state.get("failed") else "succeeded"})
+    emit(state, "RunFinished", {"state": "failed" if state.get("failed") else "succeeded"})
     return load_run(run_id) or state
 
 
 def _run_trigger(state: dict, step: dict, iteration: int) -> None:
     node_id = step["id"]
-    on = _config(step).get("on") or {"type": "manual", "spec": ""}
+    on = config_of(step).get("on") or {"type": "manual", "spec": ""}
     label = f"{on.get('type') or 'manual'}"
     if on.get("spec"):
         label += f" · {on['spec']}"
-    _emit(
+    emit(
         state,
         "NodeStarted",
         {"nodeId": node_id, "iteration": iteration, "input": label, "maxIters": 0},
     )
-    _emit(state, "NodeFinished", {"nodeId": node_id, "iteration": iteration})
+    emit(state, "NodeFinished", {"nodeId": node_id, "iteration": iteration})
     state["ran"].append(node_id)
     state["take"][node_id] = iteration + 1
     state["verdicts"][node_id] = None
@@ -549,7 +381,7 @@ def _run_trigger(state: dict, step: dict, iteration: int) -> None:
 def _arm_matches(arm: dict, inputs: list[dict], state: dict, execute_fn: ExecuteFn | None) -> bool:
     when = arm.get("when") or {}
     if when.get("mode") != "prose":
-        return _holds(when, inputs)
+        return holds(when, inputs)
     source = str(when.get("source") or "").strip() or "Should this arm be taken? Answer PASS or FAIL."
     context = "\n".join(
         f"{item['nodeId']}: {item.get('verdict') or '—'} · {(state.get('summaries') or {}).get(item['nodeId'], '')}"
@@ -573,8 +405,8 @@ def _arm_matches(arm: dict, inputs: list[dict], state: dict, execute_fn: Execute
 def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | None = None) -> tuple[list[str], bool]:
     node_id = step["id"]
     scenario = state["scenario"]
-    inputs = [{"nodeId": pred, "verdict": state["verdicts"].get(pred)} for pred in _preds(scenario, node_id)]
-    _emit(
+    inputs = [{"nodeId": pred, "verdict": state["verdicts"].get(pred)} for pred in preds(scenario, node_id)]
+    emit(
         state,
         "NodeStarted",
         {
@@ -584,16 +416,16 @@ def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | N
             "maxIters": 8,
         },
     )
-    arms = _config(step).get("arms") or []
+    arms = config_of(step).get("arms") or []
     arm = next((a for a in arms if isinstance(a, dict) and _arm_matches(a, inputs, state, execute_fn)), None)
     route = None
     if arm is not None:
-        targets = _succs(scenario, node_id, arm.get("id"))
+        targets = succs(scenario, node_id, arm.get("id"))
         route = targets[0] if targets else None
     culprit = next((i for i in inputs if i.get("verdict") == "FAIL"), None)
     decision = "fail" if culprit else "pass"
-    title = _title(_by_id(scenario).get(route) or {"id": route or "", "title": "nowhere"})
-    _emit(
+    title = title_of(by_id(scenario).get(route) or {"id": route or "", "title": "nowhere"})
+    emit(
         state,
         "GateEvaluated",
         {
@@ -610,7 +442,7 @@ def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | N
     state["verdicts"][node_id] = "FAIL" if culprit else "PASS"
 
     if not route:
-        _emit(
+        emit(
             state,
             "NodeFailed",
             {
@@ -627,13 +459,13 @@ def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | N
         return [], True
 
     if route in state["ran"]:
-        cap = int(_config(step).get("maxLoops") or 5)
+        cap = int(config_of(step).get("maxLoops") or 5)
         if state["loops"] >= cap:
-            _emit(state, "NodeFailed", {"nodeId": node_id, "iteration": iteration, "error": f"gave up after {cap} takes"})
+            emit(state, "NodeFailed", {"nodeId": node_id, "iteration": iteration, "error": f"gave up after {cap} takes"})
             state["failed"] = True
             return [], True
         state["loops"] += 1
-        _emit(
+        emit(
             state,
             "LoopAdvanced",
             {
@@ -643,7 +475,7 @@ def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | N
                 "feedback": f"{culprit['nodeId']} feedback" if culprit else "another take",
             },
         )
-        body = _between(scenario, route, node_id)
+        body = between(scenario, route, node_id)
         rerun = []
         for item in body:
             if item in state["ran"]:
@@ -651,7 +483,7 @@ def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | N
             if item not in {route, node_id} and state["verdicts"].get(item) == "PASS":
                 if item not in state["satisfied"]:
                     state["satisfied"].append(item)
-                _emit(
+                emit(
                     state,
                     "NodeSkipped",
                     {
@@ -667,192 +499,10 @@ def _run_gate(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | N
     return [route], False
 
 
-def _park_human(state: dict, step: dict, iteration: int) -> None:
-    cfg = _config(step)
-    who = str(cfg.get("assignee") or "you").strip() or "you"
-    prompt = str(cfg.get("goal") or "").strip() or f"{_title(step)} — approve?"
-    payload = {
-        "nodeId": step["id"],
-        "iteration": iteration,
-        "prompt": prompt,
-        "who": who,
-        "onFail": cfg.get("onFail") or "halt",
-    }
-    _emit(state, "HumanWaiting", payload)
-    state["status"] = "waiting_human"
-    state["park"] = {"kind": "human", **payload}
-
-
-def _park_wait(state: dict, step: dict, iteration: int) -> bool:
-    until = _config(step).get("until") or {"type": "timer", "spec": ""}
-    kind = str(until.get("type") or "timer")
-    spec = str(until.get("spec") or "").strip()
-    label = spec or kind
-    _emit(
-        state,
-        "WaitStarted",
-        {"nodeId": step["id"], "iteration": iteration, "until": f"{kind} · {label}", "label": label},
-    )
-    if kind == "poll":
-        parsed = parse_poll(spec)
-        if parsed is not None:
-            seconds, url = parsed
-            state["status"] = "waiting_world"
-            state["park"] = {
-                "kind": "wait",
-                "nodeId": step["id"],
-                "iteration": iteration,
-                "until": "poll",
-                "url": url,
-                "interval": seconds,
-                "by": "poll matched",
-            }
-            _arm_poll(state["runId"], seconds, url)
-            return True
-        # A bare name is still a bus park — something else has to tell us.
-        state["status"] = "waiting_world"
-        state["waitingEvent"] = spec or kind
-        state["park"] = {
-            "kind": "wait",
-            "nodeId": step["id"],
-            "iteration": iteration,
-            "until": kind,
-            "by": "event received",
-        }
-        return True
-    if kind != "timer":
-        state["status"] = "waiting_world"
-        state["waitingEvent"] = spec or kind
-        state["park"] = {
-            "kind": "wait",
-            "nodeId": step["id"],
-            "iteration": iteration,
-            "until": kind,
-            "by": "event received",
-        }
-        return True
-    seconds = parse_wait_seconds(spec)
-    if seconds is None:
-        seconds = 0
-    if seconds <= 0:
-        _finish_wait(state, step["id"], iteration, "elapsed")
-        return False
-    wake = time.time() + seconds
-    state["status"] = "waiting_world"
-    state["wakeAt"] = wake
-    state["park"] = {"kind": "wait", "nodeId": step["id"], "iteration": iteration, "until": kind, "by": "elapsed"}
-    _arm_timer(state["runId"], seconds)
-    return True
-
-
-def _finish_wait(state: dict, node_id: str, iteration: int, by: str) -> None:
-    _emit(state, "WaitResolved", {"nodeId": node_id, "iteration": iteration, "by": by})
-    state["ran"].append(node_id)
-    state["take"][node_id] = iteration + 1
-    state["verdicts"][node_id] = None
-    state["park"] = None
-    state["wakeAt"] = None
-    state["waitingEvent"] = None
-    state["status"] = "running"
-
-
-# Recording stand-in — no model. Off unless a caller asks for it with the
-# `fake` flag on workflow.run.start; tests and screen recordings do, the
-# canvas does not. Implement lingers so the card keeps spinning; everything
-# else lands in a few seconds.
-_FAKE_TOOLS: dict[str, list[tuple[str, str]]] = {
-    "implement": [
-        ("read_file", "src/components/ui/button.tsx"),
-        ("search_files", "Marketing Site v3"),
-        ("write_file", "src/pages/Home.tsx"),
-        ("patch", "src/styles.css"),
-        ("read_file", "src/pages/Home.tsx"),
-        ("search_files", "token --color-primary"),
-        ("write_file", "src/components/Hero.tsx"),
-        ("patch", "src/pages/Home.tsx"),
-    ],
-    "review": [
-        ("read_file", "src/pages/Home.tsx"),
-        ("search_files", "inline style"),
-    ],
-    "judge": [
-        ("browser_navigate", "http://localhost:5173"),
-        ("vision_analyze", "Figma · Marketing Site v3"),
-    ],
-    "ship": [
-        ("terminal", "git status"),
-        ("terminal", "gh pr create"),
-    ],
-}
-
-_FAKE_DONE: dict[str, dict] = {
-    "implement": {
-        "ok": True,
-        "summary": "Built the header from the Figma tokens. diff +48 −0 · 3 files",
-        "verdict": "PASS",
-        "output": {"text": "header + hero from tokens", "files": 3},
-    },
-    "review": {
-        "ok": True,
-        "summary": "PASS · naming clean, no inline styles",
-        "verdict": "PASS",
-        "output": {"text": "review notes: none"},
-    },
-    "judge": {
-        "ok": True,
-        "summary": "PASS · H1 700 matches · pad 16=16px",
-        "verdict": "PASS",
-        "output": {"text": "visual match"},
-    },
-    "ship": {
-        "ok": True,
-        "summary": "PR #1241 opened",
-        "verdict": "PASS",
-        "output": {"text": "PR #1241", "href": "https://github.com/nousresearch/hermes-agent/pull/1241"},
-    },
-}
-
-
-def _play_fake(state: dict, step: dict, iteration: int) -> dict:
-    node_id = step["id"]
-    tools = _FAKE_TOOLS.get(node_id) or [("read_file", node_id)]
-    # Implement holds the spinner for a recording beat. Pause or cancel
-    # cuts it short so you can linger there without waiting out the clock.
-    hold = 28.0 if node_id == "implement" else 2.8
-    tick = 1.6 if node_id == "implement" else 1.2
-    started = time.time()
-    i = 0
-    while time.time() - started < hold:
-        name, arg = tools[i % len(tools)]
-        _emit(
-            state,
-            "AgentTraceEvent",
-            {"nodeId": node_id, "iteration": iteration, "tool": {"name": name, "arg": arg}},
-        )
-        i += 1
-        deadline = time.time() + tick
-        while time.time() < deadline:
-            _absorb_signals(state)
-            live = load_run(state["runId"]) or {}
-            if state.get("pauseRequested") or live.get("pauseRequested") or live.get("status") in {"cancelled", "failed"}:
-                break
-            time.sleep(0.15)
-        _absorb_signals(state)
-        live = load_run(state["runId"]) or {}
-        if live.get("status") in {"cancelled", "failed"}:
-            state["status"] = live["status"]
-            return {"ok": False, "error": "cancelled"}
-        if state.get("pauseRequested") or live.get("pauseRequested"):
-            state["pauseRequested"] = True
-            return {"ok": True, "_paused": True}
-    done = dict(_FAKE_DONE.get(node_id) or {"ok": True, "summary": "done", "verdict": "PASS", "output": {"text": "done"}})
-    return done
-
-
 def _compute_agent(state: dict, step: dict, iteration: int, execute_fn: ExecuteFn | None) -> dict:
     node_id = step["id"]
-    cfg = _config(step)
-    goal = str(cfg.get("goal") or "").strip() or _title(step)
+    cfg = config_of(step)
+    goal = str(cfg.get("goal") or "").strip() or title_of(step)
     context = "" if cfg.get("blind") else _context_for(state, node_id)
     traces: list[tuple[str, str]] = []
 
@@ -866,7 +516,7 @@ def _compute_agent(state: dict, step: dict, iteration: int, execute_fn: ExecuteF
     save_run(state)
     resume = bool(existing)
     if state.get("fake") and execute_fn is None:
-        return _play_fake(state, step, iteration)
+        return fake.play(state, step, iteration)
     if execute_fn is None:
         from workflow.agent import execute_agent_step
 
@@ -888,9 +538,9 @@ def _compute_agent(state: dict, step: dict, iteration: int, execute_fn: ExecuteF
 
 def _apply_agent(state: dict, step: dict, iteration: int, result: dict) -> str:
     node_id = step["id"]
-    cfg = _config(step)
+    cfg = config_of(step)
     for name, arg in result.get("_traces") or []:
-        _emit(
+        emit(
             state,
             "AgentTraceEvent",
             {"nodeId": node_id, "iteration": iteration, "tool": {"name": name, "arg": arg}},
@@ -900,11 +550,11 @@ def _apply_agent(state: dict, step: dict, iteration: int, result: dict) -> str:
         return "hold"
     if not result.get("ok", True):
         error = str(result.get("error") or "step failed")
-        _emit(state, "NodeFailed", {"nodeId": node_id, "iteration": iteration, "error": error})
+        emit(state, "NodeFailed", {"nodeId": node_id, "iteration": iteration, "error": error})
         from workflow.agent import is_user_fixable
 
         if is_user_fixable(error):
-            _emit(state, "UserAsk", {"nodeId": node_id, "prompt": error})
+            emit(state, "UserAsk", {"nodeId": node_id, "prompt": error})
             state["failed"] = True
             return "halt"
         retries = int(state.setdefault("tries", {}).get(node_id) or 0)
@@ -924,9 +574,9 @@ def _apply_agent(state: dict, step: dict, iteration: int, result: dict) -> str:
     summary = str(result.get("summary") or "done")
     verdict = result.get("verdict")
     output = result.get("output") if isinstance(result.get("output"), dict) else {"text": summary}
-    _emit(state, "AgentTraceSummary", {"nodeId": node_id, "iteration": iteration, "summary": summary, "verdict": verdict})
-    _emit(state, "TaskOutput", {"nodeId": node_id, "iteration": iteration, "output": output})
-    _emit(state, "NodeFinished", {"nodeId": node_id, "iteration": iteration})
+    emit(state, "AgentTraceSummary", {"nodeId": node_id, "iteration": iteration, "summary": summary, "verdict": verdict})
+    emit(state, "TaskOutput", {"nodeId": node_id, "iteration": iteration, "output": output})
+    emit(state, "NodeFinished", {"nodeId": node_id, "iteration": iteration})
     state["ran"].append(node_id)
     state["take"][node_id] = iteration + 1
     state["verdicts"][node_id] = verdict
@@ -941,10 +591,10 @@ def _run_agents(state: dict, steps: list[dict], execute_fn: ExecuteFn | None) ->
     prepared = []
     for step in steps:
         iteration = int((state["take"].get(step["id"]) or 0))
-        cfg = _config(step)
-        goal = str(cfg.get("goal") or "").strip() or _title(step)
-        _emit(state, "NodePending", {"nodeId": step["id"], "iteration": iteration})
-        _emit(
+        cfg = config_of(step)
+        goal = str(cfg.get("goal") or "").strip() or title_of(step)
+        emit(state, "NodePending", {"nodeId": step["id"], "iteration": iteration})
+        emit(
             state,
             "NodeStarted",
             {
@@ -980,12 +630,12 @@ def _run_agents(state: dict, steps: list[dict], execute_fn: ExecuteFn | None) ->
             if step["id"] not in state["queue"]:
                 state["queue"].append(step["id"])
         else:
-            routed.extend(_succs(state["scenario"], step["id"]))
+            routed.extend(succs(state["scenario"], step["id"]))
     return routed, halted
 
 
 def respond(run_id: str, node_id: str, decision: str, *, by: str | None = None, execute_fn: ExecuteFn | None = None) -> dict:
-    with _lock_for(run_id):
+    with lock_for(run_id):
         state = load_run(run_id)
         if state is None:
             raise ValueError(f"No run '{run_id}'.")
@@ -995,14 +645,14 @@ def respond(run_id: str, node_id: str, decision: str, *, by: str | None = None, 
         choice = "approved" if decision == "approved" else "denied"
         who = by or park.get("who") or "you"
         iteration = int(park.get("iteration") or 0)
-        _emit(state, "HumanResponded", {"nodeId": node_id, "iteration": iteration, "decision": choice, "by": who})
+        emit(state, "HumanResponded", {"nodeId": node_id, "iteration": iteration, "decision": choice, "by": who})
         state["park"] = None
         if choice == "approved":
             state["ran"].append(node_id)
             state["take"][node_id] = iteration + 1
             state["verdicts"][node_id] = "PASS"
             state["status"] = "running"
-            for nxt in _succs(state["scenario"], node_id):
+            for nxt in succs(state["scenario"], node_id):
                 if nxt not in state["queue"]:
                     state["queue"].append(nxt)
             save_run(state)
@@ -1020,7 +670,7 @@ def respond(run_id: str, node_id: str, decision: str, *, by: str | None = None, 
                 state["verdicts"][node_id] = "FAIL"
                 state["status"] = "failed"
                 save_run(state)
-                _emit(state, "RunFinished", {"state": "failed"})
+                emit(state, "RunFinished", {"state": "failed"})
                 return load_run(run_id) or state
     return advance(run_id, execute_fn=execute_fn)
 
@@ -1046,115 +696,22 @@ def resolve_event(
         park = state.get("park") or {}
         if park.get("kind") != "wait":
             continue
-        with _lock_for(state["runId"]):
+        with lock_for(state["runId"]):
             live = load_run(state["runId"])
             if live is None or live.get("status") != "waiting_world":
                 continue
             if payload is not None:
                 live["payload"] = payload
             node_id = park["nodeId"]
-            _finish_wait(live, node_id, int(park.get("iteration") or 0), "event received")
-            for nxt in _succs(live["scenario"], node_id):
+            finish_wait(live, node_id, int(park.get("iteration") or 0), "event received")
+            for nxt in succs(live["scenario"], node_id):
                 if nxt not in live["queue"]:
                     live["queue"].append(nxt)
             save_run(live)
         if background:
-            _spawn(state["runId"], execute_fn)
+            spawn(state["runId"], execute_fn)
         else:
             advance(state["runId"], execute_fn=execute_fn)
-        resumed.append(state["runId"])
-    return resumed
-
-
-def _arm_timer(run_id: str, seconds: float) -> None:
-    def fire() -> None:
-        time.sleep(max(0.0, seconds))
-        tick_timers(run_id=run_id)
-
-    thread = threading.Thread(target=fire, name=f"workflow-timer-{run_id}", daemon=True)
-    with _thread_lock:
-        _timer_threads[run_id] = thread
-    thread.start()
-
-
-def _http_ok(url: str) -> bool:
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            return 200 <= int(getattr(resp, "status", 200)) < 300
-    except Exception:
-        return False
-
-
-def _arm_poll(run_id: str, seconds: float, url: str) -> None:
-    def fire() -> None:
-        time.sleep(max(1.0, seconds))
-        if _http_ok(url):
-            tick_polls(run_id=run_id)
-            return
-        live = load_run(run_id)
-        park = (live or {}).get("park") or {}
-        if live and live.get("status") == "waiting_world" and park.get("url") == url:
-            _arm_poll(run_id, float(park.get("interval") or seconds), url)
-
-    thread = threading.Thread(target=fire, name=f"workflow-poll-{run_id}", daemon=True)
-    with _thread_lock:
-        _timer_threads[f"poll:{run_id}"] = thread
-    thread.start()
-
-
-def tick_polls(run_id: str | None = None) -> list[str]:
-    resumed: list[str] = []
-    runs = [load_run(run_id)] if run_id else list_runs()
-    for state in runs:
-        if not state or state.get("status") != "waiting_world":
-            continue
-        park = state.get("park") or {}
-        if park.get("until") != "poll" or not park.get("url"):
-            continue
-        if not _http_ok(park["url"]):
-            continue
-        with _lock_for(state["runId"]):
-            live = load_run(state["runId"])
-            if live is None or live.get("status") != "waiting_world":
-                continue
-            node_id = park["nodeId"]
-            _finish_wait(live, node_id, int(park.get("iteration") or 0), "poll matched")
-            for nxt in _succs(live["scenario"], node_id):
-                if nxt not in live["queue"]:
-                    live["queue"].append(nxt)
-            save_run(live)
-        _spawn(state["runId"])
-        resumed.append(state["runId"])
-    return resumed
-
-
-def tick_timers(run_id: str | None = None) -> list[str]:
-    """Resume timer parks whose wake time has passed. Called on a timer thread and at boot."""
-    now = time.time()
-    resumed: list[str] = []
-    runs = [load_run(run_id)] if run_id else list_runs()
-    for state in runs:
-        if not state or state.get("status") != "waiting_world":
-            continue
-        wake = state.get("wakeAt")
-        if wake is None or float(wake) > now:
-            continue
-        park = state.get("park") or {}
-        if park.get("kind") != "wait":
-            continue
-        with _lock_for(state["runId"]):
-            live = load_run(state["runId"])
-            if live is None or live.get("status") != "waiting_world":
-                continue
-            node_id = park["nodeId"]
-            _finish_wait(live, node_id, int(park.get("iteration") or 0), park.get("by") or "elapsed")
-            for nxt in _succs(live["scenario"], node_id):
-                if nxt not in live["queue"]:
-                    live["queue"].append(nxt)
-            save_run(live)
-        _spawn(state["runId"])
         resumed.append(state["runId"])
     return resumed
 
@@ -1167,9 +724,9 @@ def request_pause(run_id: str) -> dict:
         return state
     if state.get("park"):
         return state
-    if not _thread_alive(run_id):
-        return _fail_dead_run(state)
-    _signal(run_id, "pause")
+    if not thread_alive(run_id):
+        return fail_dead_run(state)
+    signal(run_id, "pause")
     state["pauseRequested"] = True
     save_run(state)
     return state
@@ -1181,13 +738,13 @@ def resume_run(run_id: str, *, execute_fn: ExecuteFn | None = None) -> dict:
         raise ValueError(f"No run '{run_id}'.")
     if state.get("status") != "paused":
         return state
-    _clear_signal(run_id)
+    clear_signal(run_id)
     state["pauseRequested"] = False
     state["status"] = "running"
     save_run(state)
     if execute_fn is not None:
         return advance(run_id, execute_fn=execute_fn)
-    _spawn(run_id)
+    spawn(run_id)
     return load_run(run_id) or state
 
 
@@ -1195,12 +752,12 @@ def cancel_run(run_id: str) -> dict:
     state = load_run(run_id)
     if state is None:
         raise ValueError(f"No run '{run_id}'.")
-    _signal(run_id, "cancel")
+    signal(run_id, "cancel")
     state["status"] = "cancelled"
     state["park"] = None
     state["queue"] = []
     save_run(state)
-    _emit(state, "RunFinished", {"state": "failed"})
+    emit(state, "RunFinished", {"state": "failed"})
     return load_run(run_id) or state
 
 
@@ -1211,21 +768,9 @@ def rearm_parked() -> None:
     for state in list_runs():
         status = state.get("status")
         if status == "running":
-            _spawn(state["runId"])
-            continue
-        if status != "waiting_world":
-            continue
-        park = state.get("park") or {}
-        if park.get("until") == "poll" and park.get("url"):
-            if not _http_ok(park["url"]):
-                _arm_poll(state["runId"], float(park.get("interval") or 60), park["url"])
-            continue
-        wake = state.get("wakeAt")
-        if wake is None:
-            continue
-        remaining = float(wake) - time.time()
-        if remaining > 0:
-            _arm_timer(state["runId"], remaining)
+            spawn(state["runId"])
+        elif status == "waiting_world":
+            rearm(state)
 
 
 def snapshot(run_id: str, after: int = -1) -> dict:

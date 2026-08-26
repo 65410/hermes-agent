@@ -5,8 +5,6 @@ import time
 
 from workflow.runner import (
     advance,
-    parse_poll,
-    parse_wait_seconds,
     request_pause,
     resolve_event,
     respond,
@@ -15,6 +13,7 @@ from workflow.runner import (
     start_run,
 )
 from workflow.store import load_events, load_run, save_documents, save_run
+from workflow.topology import parse_poll, parse_wait_seconds
 
 
 def _agent(_goal, context, payload, _config):
