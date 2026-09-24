@@ -1153,6 +1153,30 @@ export function preserveLocalPendingTurnMessages(
   const relocated = new Set<ChatMessage>()
   const supersededProjections = new Set<string>()
 
+  const mergeLiveToolCompletion = (
+    durable: ChatMessage['parts'][number],
+    live: ChatMessage['parts'][number]
+  ): ChatMessage['parts'][number] => {
+    if (durable.type !== 'tool-call' || live.type !== 'tool-call') {
+      return durable
+    }
+
+    return {
+      ...durable,
+      ...(live.isError !== undefined ? { isError: live.isError } : {}),
+      ...(live.toolResultMetadata !== undefined
+        ? {
+            toolResultMetadata: {
+              ...(durable.toolResultMetadata ?? {}),
+              ...live.toolResultMetadata
+            }
+          }
+        : {}),
+      ...(live.completedAt !== undefined ? { completedAt: live.completedAt } : {}),
+      ...(live.interrupted !== undefined ? { interrupted: live.interrupted } : {})
+    }
+  }
+
   // The acknowledged boundary may itself land on a post-correction tool
   // bubble on a subsequent refresh. Inspect the cached user occurrence even
   // then; no durable user row has acknowledged that correction yet.
@@ -1186,7 +1210,7 @@ export function preserveLocalPendingTurnMessages(
       // Hydration folds adjacent tool rounds into one assistant bubble when
       // the correction has not reached the DB. Split only at a proven source
       // row boundary; a parallel batch within ONE source row is not a safe cut.
-      const fold = withReplacements[afterIndex]
+      let fold = withReplacements[afterIndex]
       const priorCalls = new Set(before.flatMap(toolCallIdsOf))
       const laterCalls = new Set(after.flatMap(toolCallIdsOf))
       const beforePart = fold.parts.findLastIndex(part => part.type === 'tool-call' && priorCalls.has(part.toolCallId))
@@ -1233,6 +1257,20 @@ export function preserveLocalPendingTurnMessages(
                 )
           )
         ) {
+          const mergedParts = fold.parts.map((durable, partIndex) => {
+            if (partIndex < cut || durable.type !== 'tool-call') {
+              return durable
+            }
+
+            const live = local.parts.find(
+              part => part.type === 'tool-call' && part.toolCallId === durable.toolCallId
+            )
+
+            return live ? mergeLiveToolCompletion(durable, live) : durable
+          })
+
+          fold = { ...fold, parts: mergedParts }
+          withReplacements[afterIndex] = fold
           relocated.add(local)
         }
       }
@@ -1262,7 +1300,9 @@ export function preserveLocalPendingTurnMessages(
   const trailing = preserved.filter(message => !relocated.has(message))
 
   if (!insertions.size && !foldBoundaries.size) {
-    return trailing.length ? [...withReplacements, ...trailing] : withReplacements
+    // No correction re-anchored: this is the #120978 splice-older-preserved
+    // path exactly as it was before the re-anchoring landed.
+    return trailing.length ? spliceOlderPreservedRows(withReplacements, trailing) : withReplacements
   }
 
   const ordered = withReplacements.flatMap((fold, index) => {
@@ -1278,29 +1318,45 @@ export function preserveLocalPendingTurnMessages(
 
     const fragments: ChatMessage[] = [...(insertions.get(index) ?? [])]
     let from = 0
-    let source = fold.rowId
+
+    const sourceRowIdFor = (parts: ChatMessage['parts']): number | undefined =>
+      parts.find(part => part.sourceRowId !== undefined)?.sourceRowId ?? fold.rowId
+
+    const splitFragment = (parts: ChatMessage['parts'], id: string, zeroSpan = false): ChatMessage => {
+      const rowId = sourceRowIdFor(parts)
+      const fragment: ChatMessage = {
+        ...fold,
+        id,
+        parts,
+        ...(rowId !== undefined ? { rowId } : {}),
+        ...(zeroSpan ? { serverRowSpan: 0 } : {})
+      }
+
+      // Reactions address one exact durable backend row. A folded bubble may
+      // carry that row's reactions, but virtual fragments for other source rows
+      // must not inherit them.
+      if (rowId !== fold.rowId) {
+        delete fragment.reactions
+      }
+
+      return fragment
+    }
 
     for (const boundary of boundaries) {
       // Only the final fragment counts the original durable rows. Intermediate
       // segments are presentation-only and add no server rows to backfill.
-      fragments.push({
-        ...fold,
-        id: from === 0 ? fold.id : `${fold.id}-after-${source}`,
-        parts: fold.parts.slice(from, boundary.cut),
-        ...(source !== undefined ? { rowId: source } : {}),
-        serverRowSpan: 0
-      })
+      const parts = fold.parts.slice(from, boundary.cut)
+      const rowId = sourceRowIdFor(parts)
+      fragments.push(
+        splitFragment(parts, from === 0 ? fold.id : `${fold.id}-after-${rowId ?? boundary.rowId}`, true)
+      )
       fragments.push(boundary.correction)
       from = boundary.cut
-      source = boundary.rowId
     }
 
-    fragments.push({
-      ...fold,
-      id: `${fold.id}-after-${source}`,
-      parts: fold.parts.slice(from),
-      ...(source !== undefined ? { rowId: source } : {})
-    })
+    const tailParts = fold.parts.slice(from)
+    const tailRowId = sourceRowIdFor(tailParts)
+    fragments.push(splitFragment(tailParts, `${fold.id}-after-${tailRowId ?? fold.rowId}`))
 
     return fragments
   })
