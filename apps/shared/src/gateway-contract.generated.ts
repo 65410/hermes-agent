@@ -3584,6 +3584,9 @@ export interface MetricsGpu {
   freq_mhz?: number | null
   cores?: number | null
   power_w?: number | null
+  temp_c?: number | null
+  mem_total?: number | null
+  mem_used?: number | null
 }
 export interface MetricsMemory {
   total: number

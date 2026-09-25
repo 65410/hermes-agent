@@ -22,7 +22,11 @@ def test_first_frame_has_no_window_and_the_next_frame_covers_the_gap():
     first = read_system_metrics(use_cache=False)
     assert first["interval_s"] is None
     assert first["disk"]["read_bps"] is None and first["net"]["rx_bps"] is None
-    assert first["gpus"] == [] and first["cpu"]["clusters"] == []  # SoC delta would span milliseconds
+    assert first["cpu"]["clusters"] == []  # SoC delta would span milliseconds
+    # NVML utilization is instantaneous, so NVIDIA hosts carry GPU rows on the first frame too;
+    # every such row must be a live reading, not a placeholder.
+    for gpu in first["gpus"]:
+        assert gpu["active"] is None or 0 <= gpu["active"] <= 1
 
     time.sleep(0.3)
     second = read_system_metrics(use_cache=False)

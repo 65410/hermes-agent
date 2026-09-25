@@ -85,6 +85,9 @@ class MetricsCpu(Result):
 class MetricsGpu(MetricsDomain):
     cores: int | None = None
     power_w: float | None = None
+    temp_c: float | None = Field(default=None, description="Device sensor °C (NVML); null when the driver does not report it.")
+    mem_total: int | None = None
+    mem_used: int | None = None
 
 
 class MetricsMemory(Result):
@@ -137,7 +140,7 @@ class SystemMetricsResult(Result):
     cpu: MetricsCpu | None = None
     gpus: list[MetricsGpu] = Field(default_factory=list)
     memory: MetricsMemory | None = None
-    power_w: dict[str, float] = Field(default_factory=dict, description="cpu / gpu / ane / dram watts (Apple Silicon).")
+    power_w: dict[str, float] = Field(default_factory=dict, description="cpu / gpu / ane / dram watts (Apple Silicon; NVIDIA GPUs add device power via NVML).")
     temps: list[MetricsTemp] = Field(default_factory=list)
     disk: MetricsDisk | None = None
     net: MetricsNet | None = None

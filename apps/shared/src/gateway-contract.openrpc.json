@@ -18920,6 +18920,43 @@
             ],
             "default": null,
             "title": "Power W"
+          },
+          "temp_c": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Device sensor \u00b0C (NVML); null when the driver does not report it.",
+            "title": "Temp C"
+          },
+          "mem_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mem Total"
+          },
+          "mem_used": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mem Used"
           }
         },
         "required": [
@@ -36001,7 +36038,7 @@
             "additionalProperties": {
               "type": "number"
             },
-            "description": "cpu / gpu / ane / dram watts (Apple Silicon).",
+            "description": "cpu / gpu / ane / dram watts (Apple Silicon; NVIDIA GPUs add device power via NVML).",
             "title": "Power W",
             "type": "object"
           },

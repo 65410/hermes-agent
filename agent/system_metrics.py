@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from hermes_platform.host import facts
-from hermes_platform.sensors import apple_silicon
+from hermes_platform.sensors import apple_silicon, nvidia
 
 _CACHE_TTL_SECONDS = 1.0
 _MAX_VOLUMES = 8
@@ -71,6 +71,7 @@ class _Sampler:
         self._psutil = psutil
         self._proc = psutil.Process(os.getpid())
         self._soc = apple_silicon.open_sampler()
+        self._nvml = nvidia.open_sampler()
         self._prev_t: float | None = None
         self._prev_disk: tuple[int, int] | None = None
         self._prev_net: tuple[int, int] | None = None
@@ -102,11 +103,33 @@ class _Sampler:
                        "cpu_percent": self._proc.cpu_percent(), "threads": self._proc.num_threads()}
 
         gpus: list[dict[str, Any]] = []
+        power = {k: round(v, 3) for k, v in soc.power_w.items()} if soc else {}
+        temps: list[dict[str, Any]] = ([{"name": k, "celsius": round(v, 1)} for k, v in soc.temps_c.items()]
+                                       if soc else [])
+        if self._nvml:
+            for i, gpu in enumerate(self._nvml.sample()):
+                # Discrete NVIDIA GPUs answer util/clock/power per device; the SoC row (if any)
+                # keeps its own entry, so a hybrid host shows both.
+                gpus.append({
+                    "name": gpu.name or f"NVIDIA GPU {i}",
+                    "kind": "GPU",
+                    "active": round(gpu.active, 4) if gpu.active is not None else None,
+                    "freq_mhz": gpu.freq_mhz,
+                    "cores": gpu.cores,
+                    "power_w": gpu.power_w,
+                    "temp_c": gpu.temp_c,
+                    "mem_total": gpu.mem_total,
+                    "mem_used": gpu.mem_used,
+                })
+                if gpu.power_w is not None:
+                    power["gpu"] = round(power.get("gpu", 0.0) + gpu.power_w, 3)
+                if gpu.temp_c is not None:
+                    temps.append({"name": f"gpu{i} {gpu.name or 'GPU'}".strip(), "celsius": round(gpu.temp_c, 1)})
         if sampler and soc and soc.gpu:
             gpus.append({**_domain(soc.gpu), "name": "Apple GPU", "cores": sampler.gpu_cores,
                          "power_w": soc.power_w.get("gpu")})
-        temps = ([{"name": k, "celsius": round(v, 1)} for k, v in soc.temps_c.items()]
-                 if soc else _linux_temps(ps))
+        temps = temps or ([{"name": k, "celsius": round(v, 1)} for k, v in soc.temps_c.items()]
+                          if soc else _linux_temps(ps))
         return {
             "ts": time.time(),
             "interval_s": round(dt, 3) if dt else None,
@@ -124,7 +147,7 @@ class _Sampler:
             "gpus": gpus,
             "memory": {"total": vm.total, "used": vm.used, "available": vm.available, "percent": vm.percent,
                        "swap_total": swap.total, "swap_used": swap.used},
-            "power_w": {k: round(v, 3) for k, v in soc.power_w.items()} if soc else {},
+            "power_w": power,
             "temps": temps,
             "disk": {
                 "read_bps": _rate(disk_now[0], prev_disk and prev_disk[0], dt) if disk_now else None,
