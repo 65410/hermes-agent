@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import platform
 import struct
+import subprocess
+import sys
 import time
 
 import pytest
@@ -48,8 +50,20 @@ def test_energy_counters_convert_to_watts_over_the_window():
     assert energy_watts(1, "mJ", 0.0) is None
 
 
+def _inside_macos_vm() -> bool:
+    """Virtualized macOS guests (GitHub's macos-latest runners) get no IOReport SoC channels or pmgr DVFS tables."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.hv_vmm_present"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return out.stdout.strip() == "1"
+
+
 @pytest.mark.platforms("macos")
 @pytest.mark.skipif(platform.machine() != "arm64", reason="IOReport SoC channels exist on Apple Silicon only")
+@pytest.mark.skipif(_inside_macos_vm(), reason="SoC sensors are not exposed to virtualized macOS guests")
 def test_live_sample_stays_within_the_hardware_envelope():
     sampler = open_sampler()
     assert sampler is not None
