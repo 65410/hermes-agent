@@ -104,7 +104,12 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
-event("message.start", None, doc="A turn began streaming; no payload.")
+class MessageStartPayload(Payload):
+    client_message_id: str | None = None
+    user_row_id: int | None = None
+
+event("message.start", MessageStartPayload,
+      doc="A turn began streaming; identified sends carry their outbox id and durable user row id.")
 
 
 class StreamDeltaPayload(Payload):

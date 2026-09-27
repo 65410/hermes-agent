@@ -2436,6 +2436,7 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  client_message_id?: string | null
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2454,11 +2455,12 @@ export interface PromptSubmitResult {
   status?: PromptSubmitStatus | null
   voice_stopped?: boolean | null
   user_row_id?: number | null
+  client_message_id?: string | null
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
 }
-export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected' | 'finished'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null
@@ -4340,6 +4342,10 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+export interface MessageStartPayload {
+  client_message_id?: string | null
+  user_row_id?: number | null
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5477,8 +5483,8 @@ export interface BackendGatewayEventMap {
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
   'message.reaction': MessageReactionPayload
-  /** A turn began streaming; no payload. */
-  'message.start': Record<string, never>
+  /** A turn began streaming; identified sends carry their outbox id and durable user row id. */
+  'message.start': MessageStartPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */

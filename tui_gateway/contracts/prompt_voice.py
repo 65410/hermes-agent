@@ -30,6 +30,7 @@ class PromptSubmitParams(SessionParams):
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
     text: JsonValue = ""
+    client_message_id: str | None = None  # stable per logical send; requires a stored session
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
@@ -56,6 +57,7 @@ class PromptSubmitStatus(WireEnum):
     queued = "queued"
     steered = "steered"
     redirected = "redirected"
+    finished = "finished"  # duplicate of an already settled identified turn
 
 
 class PromptSubmitResult(Result):
@@ -68,6 +70,7 @@ class PromptSubmitResult(Result):
     # The row written for THIS accepted input, captured before the worker can consume it.
     # Absent on queued/steered/redirected inputs and whenever persistence is not yet proven.
     user_row_id: int | None = None
+    client_message_id: str | None = None
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None

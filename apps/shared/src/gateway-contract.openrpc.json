@@ -17893,6 +17893,37 @@
         "title": "MessageReactionPayload",
         "type": "object"
       },
+      "MessageStartPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
+          "user_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Id"
+          }
+        },
+        "title": "MessageStartPayload",
+        "type": "object"
+      },
       "MoaAggregatingPayload": {
         "additionalProperties": false,
         "properties": {
@@ -25264,6 +25295,18 @@
             "default": "",
             "title": "Text"
           },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -25457,6 +25500,18 @@
             "default": null,
             "title": "User Row Id"
           },
+          "client_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Message Id"
+          },
           "survivor_user_row_ids": {
             "anyOf": [
               {
@@ -25522,7 +25577,8 @@
           "streaming",
           "queued",
           "steered",
-          "redirected"
+          "redirected",
+          "finished"
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
@@ -37933,13 +37989,12 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; no payload.",
+      "summary": "A turn began streaming; identified sends carry their outbox id and durable user row id.",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "type": "object",
-            "additionalProperties": false
+            "$ref": "#/components/schemas/MessageStartPayload"
           }
         }
       ]

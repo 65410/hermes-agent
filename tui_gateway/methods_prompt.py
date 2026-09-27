@@ -5,6 +5,8 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+import hashlib
+import json
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -525,6 +527,152 @@ def _run_after_agent_ready(
 _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
 
+def _stage_identified_row(session: dict, receipt: dict) -> bool:
+    """Rehydrate a reserved row for the agent's submit-time adoption path."""
+    if receipt.get("row_timestamp") is None or receipt.get("user_row_id") is None:
+        return False  # row was removed/replaced: never manufacture a second user row
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    staged = {"role": "user", "content": receipt["text"], "timestamp": receipt["row_timestamp"],
+              "_row_id": receipt["user_row_id"], _DB_PERSISTED_MARKER: True}
+    if receipt.get("display_kind"):
+        staged["display_kind"] = receipt["display_kind"]
+    session["_submit_user_row"] = staged
+    return True
+
+def _identified_queue_present(session: dict, client_id: str) -> bool:
+    return any(q.get("client_message_id") == client_id for q in
+               ([session["queued_prompt"]] if session.get("queued_prompt") else [])
+               + list(session.get("queued_prompts") or []))
+
+def _identified_receipt_reply(rid, session: dict, receipt: dict):
+    state, client_id = receipt["state"], receipt["client_message_id"]
+    if state == "started" and not (session.get("running") and
+                                     session.get("_idempotent_active_id") == client_id):
+        # A crash after the execution fence may have reached a model/tool. A row
+        # proves acceptance, NOT outcome; this id must never invoke the model again.
+        return _err(rid, 4097, "Previous turn may have run before the backend stopped; inspect the transcript before retrying.",
+                    {"client_message_id": client_id, "user_row_id": receipt.get("user_row_id"),
+                     "receipt_state": "uncertain"})
+    status = {"queued": "queued", "reserved": "streaming", "started": "streaming",
+              "finished": "finished"}[state]
+    return _ok(rid, {"status": status, "client_message_id": client_id,
+                     **({"user_row_id": receipt["user_row_id"]} if receipt.get("user_row_id") else {})})
+
+def _identified_claim_reserved(rid, session, receipt):
+    """Called under admission/history lock; no worker starts until it is released."""
+    if not _stage_identified_row(session, receipt):
+        return _err(rid, 4097, "The reserved user row is missing; inspect the transcript before retrying.",
+                    {"client_message_id": receipt["client_message_id"], "receipt_state": "uncertain"})
+    session["running"] = True
+    session["_turn_cancel_requested"] = False
+    session["_idempotent_active_id"] = receipt["client_message_id"]
+    session["last_active"] = time.time()
+    _start_inflight_turn(session, receipt["text"], display_kind=receipt["display_kind"])
+    return None
+
+def _identified_start_reserved(rid, sid, session, receipt, display_metadata):
+    """Dispatch after admission lock release (including a pre-start crash recovery)."""
+    try:
+        if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
+            _start_agent_build(sid, session)
+        run_thread = threading.Thread(
+            target=lambda: _run_after_agent_ready(
+                rid, sid, session, receipt["text"], receipt["display_kind"],
+                display_metadata, None), daemon=True)
+        session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception as exc:
+        # Still 'reserved': no model call was permitted. A later retry can dispatch it.
+        session["running"] = False
+        session.pop("_idempotent_active_id", None)
+        session.pop("_submit_user_row", None)
+        return _err(rid, 5071, f"Could not start reserved turn: {exc}")
+    return _identified_receipt_reply(rid, session, receipt)
+
+def _identified_submit(rid, sid, session, params, text, display_kind, display_metadata, transport):
+    """Identified busy inputs are always durable queued (never ephemeral steer/redirect).
+
+    The ordinary un-identified path retains its existing busy behavior verbatim.
+    """
+    client_id = params["client_message_id"]
+    if not isinstance(client_id, str) or not client_id.strip() or len(client_id) > 128:
+        return _err(rid, 4004, "client_message_id must be a nonempty string of at most 128 characters")
+    if not isinstance(text, str) or not text.strip() or any(params.get(k) is not None for k in _TRUNCATION_PARAMS):
+        return _err(rid, 4004, "client_message_id currently requires a nonempty text prompt without truncation")
+    if params.get("confirm_truncate") or params.get("confirm_empty_truncate") or params.get("rebind_survivor_row_ids"):
+        return _err(rid, 4004, "client_message_id is not supported for transcript rewinds")
+    if params.get("_hosted_task") is not None or params.get("_turn_author") is not None:
+        return _err(rid, 4004, "hosted and relay turns have their own receipt identity")
+    if params.get("interrupted") or params.get("voice_context"):
+        return _err(rid, 4004, "client_message_id does not support live voice/barge-in inputs")
+    if _voice_mode_enabled():
+        from tools.voice_mode_transcript import is_voice_stop_phrase
+        if is_voice_stop_phrase(text):
+            return _err(rid, 4004, "client_message_id is not supported for voice stop controls")
+    if _session_uses_compute_host(session, _load_dashboard_process_isolation_config()):
+        return _err(rid, 4004, "client_message_id is not supported for isolated compute-host turns")
+    key = str(session.get("session_key") or "")
+    if not key:
+        return _err(rid, 4004, "client_message_id requires a stored session id; resume it before retrying")
+    canonical = {k: v for k, v in params.items() if k not in ("session_id", "profile", "client_message_id")}
+    canonical["text"] = text
+    canonical["display_kind"] = display_kind
+    fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+    try:
+        if _ensure_session_db_row(session) is False:
+            return _err(rid, 5071, "Session storage unavailable; identified prompt was not accepted")
+        _persist_branch_seed(session)
+    except Exception:
+        return _err(rid, 5071, "Session storage unavailable; retry the same client_message_id")
+    dispatch_receipt = None
+    with _session_turn_admission(session) as admitted:
+        if not admitted:
+            return _err(rid, 5035, "backend is retiring; reconnect to continue")
+        try:
+            with _session_db(session) as db:
+                if db is None:
+                    return _err(rid, 5071, "Session storage unavailable; identified prompt was not accepted")
+                receipt = db.get_prompt_receipt(key, client_id)
+                if receipt is None:
+                    if session.get("attached_images"):
+                        return _err(rid, 4004, "client_message_id cannot bind separately staged attachments")
+                    receipt, _fresh = db.claim_prompt_receipt(
+                        key, client_id, fingerprint, text, display_kind, queued=bool(session.get("running")))
+                if receipt["payload_hash"] != fingerprint:
+                    return _err(rid, 4096, "client_message_id already belongs to a different prompt",
+                                {"client_message_id": client_id})
+                if receipt["state"] == "queued":
+                    if not _identified_queue_present(session, client_id):
+                        _enqueue_prompt(session, text, transport, client_message_id=client_id)
+                    response = _identified_receipt_reply(rid, session, receipt)
+                    drain = not session.get("running")
+                elif receipt["state"] == "reserved" and not session.get("running"):
+                    if receipt["session_id"] != key:  # ancestor row cannot be adopted by new tip
+                        return _err(rid, 4097, "Reserved turn crossed a compression boundary; inspect the transcript.",
+                                    {"client_message_id": client_id, "receipt_state": "uncertain"})
+                    if session.get("attached_images"):
+                        return _err(rid, 4004, "detach staged attachments before resuming this identified turn")
+                    err = _identified_claim_reserved(rid, session, receipt)
+                    if err is not None:
+                        return err
+                    dispatch_receipt = receipt
+                elif dispatch_receipt is None:
+                    return _identified_receipt_reply(rid, session, receipt)
+        except Exception as exc:
+            logger.warning("identified prompt receipt failed: %s", exc, exc_info=True)
+            return _err(rid, 5071, "Could not verify or persist prompt receipt; retry the same client_message_id")
+    if dispatch_receipt is not None:
+        return _identified_start_reserved(rid, sid, session, dispatch_receipt, display_metadata)
+    if drain:
+        _drain_queued_prompt(rid, sid, session)
+        # It may have been claimed by drain already; reply with the current durable state.
+        try:
+            with _session_db(session) as db:
+                response = _identified_receipt_reply(rid, session, db.get_prompt_receipt(key, client_id))
+        except Exception:
+            return _err(rid, 5071, "Queued receipt exists but its dispatch status is unavailable; retry the same id")
+    return response
+
 
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
@@ -578,10 +726,7 @@ def _(rid, params: dict) -> dict:
     )
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
-    if params.get("interrupted"):
-        # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
-        mark_speech_interrupted()
+
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -628,6 +773,12 @@ def _(rid, params: dict) -> dict:
             return refusal
         if (t := current_transport()) is not None:
             _rebind_live_transport(sid, session, t)
+    if "client_message_id" in params and params["client_message_id"] is not None:
+        return _identified_submit(rid, sid, session, params, text, display_kind, display_metadata, t)
+    if params.get("interrupted"):
+        # Client-side barge-in: latch so this turn's model message carries the note.
+        from tools.tts_streaming import mark_speech_interrupted
+        mark_speech_interrupted()
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn

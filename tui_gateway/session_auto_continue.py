@@ -134,7 +134,7 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> None:
+                    turn_author: dict | None = None, client_message_id: str | None = None) -> None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
@@ -146,12 +146,14 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     _drop_queued_duplicates_of_inflight_user(session)
     text_only = not image_paths and isinstance(text, str)
     # A text-only self-copy of the live prompt would restart it on drain; an authored copy is another sender's message.
-    if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
+    if text_only and not turn_author and not client_message_id and text.strip() == _ac_inflight_original(session) != "":
         return
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
-              **({"turn_author": turn_author} if turn_author else {})}
+              **({"turn_author": turn_author} if turn_author else {}),
+              **({"client_message_id": client_message_id} if client_message_id else {})}
     existing = session.get("queued_prompt")
-    if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
+    if (existing and text_only and not turn_author and not client_message_id
+            and not existing.get("client_message_id") and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
             and not session.get("queued_prompts")):
         prev = existing["text"]
@@ -174,7 +176,8 @@ def _sanitize_queued_entry_vs_inflight_user(entry: Any, original: str) -> dict |
     if not isinstance(entry, dict):
         return None
     text = entry.get("text")
-    if not original or entry.get("image_paths") or entry.get("turn_author") or not isinstance(text, str):
+    if (not original or entry.get("client_message_id") or entry.get("image_paths")
+            or entry.get("turn_author") or not isinstance(text, str)):
         return entry
     # A lossless text-merge may have glued the live original onto a later follow-up: keep the remainder.
     rest = next((text[len(original + sep):] for sep in ("\n\n", "\n") if text.startswith(original + sep)), text).strip()
@@ -317,6 +320,27 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
             session["running"] = False
             return True
+    client_id = queued.get("client_message_id")
+    if client_id:
+        try:
+            with _session_db(session) as db:
+                receipt = db.reserve_queued_prompt_receipt(session["session_key"], client_id)
+            if receipt is None:
+                raise RuntimeError("queued receipt is no longer claimable")
+        except Exception:
+            logger.warning("could not claim identified queued prompt; leaving it queued", exc_info=True)
+            with session["history_lock"]:
+                _ac_set_queue(session, [queued, *([session["queued_prompt"]] if session.get("queued_prompt") else []),
+                                        *(session.get("queued_prompts") or [])])
+                session["running"] = False
+            return False
+        with session["history_lock"]:
+            if not _stage_identified_row(session, receipt):
+                session["running"] = False
+                _emit("error", sid, {"message": "Queued user row is unavailable; inspect the transcript."})
+                return False
+            session["_idempotent_active_id"] = client_id
+            _start_inflight_turn(session, queued["text"], display_kind=receipt["display_kind"])
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
@@ -325,7 +349,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+            _run_prompt_submit(rid, sid, session, queued["text"],
+                               **({"display_kind": receipt["display_kind"]} if client_id else {}),
+                               **kwargs, **author_kwargs)
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False

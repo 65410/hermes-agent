@@ -428,6 +428,22 @@ CREATE TABLE IF NOT EXISTS messages (
     display_order INTEGER
 );
 
+-- RPC submit receipts are separate from transcript rows: a busy prompt has no
+-- user row yet, but must survive a lost reply / process restart without replay.
+CREATE TABLE IF NOT EXISTS tui_prompt_receipts (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    client_message_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    text TEXT NOT NULL,
+    display_kind TEXT,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'reserved', 'started', 'finished')),
+    user_row_id INTEGER,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, client_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tui_prompt_receipts_queue
+    ON tui_prompt_receipts(session_id, state, created_at);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,

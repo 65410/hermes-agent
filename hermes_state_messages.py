@@ -122,6 +122,100 @@ def _stale_holder(row, now: float) -> bool:
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
 
+    @staticmethod
+    def _prompt_receipt_on_conn(conn, session_id: str, client_message_id: str):
+        # Compression rotates the stored id. An explicit branch is NOT a continuation:
+        # its parent has a different end_reason and must not share the receipt namespace.
+        return conn.execute("""WITH RECURSIVE lineage(id) AS (
+            SELECT ? UNION
+            SELECT parent_session_id FROM sessions JOIN lineage ON sessions.id = lineage.id
+            WHERE parent_session_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM sessions parent WHERE parent.id = sessions.parent_session_id
+                          AND parent.end_reason = 'compression')
+        ) SELECT r.*, m.timestamp AS row_timestamp FROM tui_prompt_receipts r
+        LEFT JOIN messages m ON m.id = r.user_row_id AND m.session_id = r.session_id
+        JOIN lineage ON r.session_id = lineage.id
+        WHERE r.client_message_id = ? ORDER BY r.created_at LIMIT 1""",
+            (session_id, client_message_id)).fetchone()
+
+    def get_prompt_receipt(self, session_id: str, client_message_id: str) -> dict | None:
+        with self._read_ctx() as conn:
+            row = self._prompt_receipt_on_conn(conn, session_id, client_message_id)
+            return dict(row) if row else None
+
+    def list_queued_prompt_receipts(self, session_id: str) -> list[dict]:
+        # A queued receipt may have been written before a compression rotation.
+        with self._read_ctx() as conn:
+            return [dict(row) for row in conn.execute("""WITH RECURSIVE lineage(id) AS (
+                SELECT ? UNION
+                SELECT parent_session_id FROM sessions JOIN lineage ON sessions.id = lineage.id
+                WHERE parent_session_id IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM sessions parent WHERE parent.id = sessions.parent_session_id
+                              AND parent.end_reason = 'compression')
+            ) SELECT r.* FROM tui_prompt_receipts r JOIN lineage ON r.session_id = lineage.id
+            WHERE r.state = 'queued' ORDER BY r.created_at, r.rowid""", (session_id,))]
+
+    def claim_prompt_receipt(self, session_id: str, client_message_id: str, payload_hash: str,
+                             text: str, display_kind: str | None, *, queued: bool) -> tuple[dict, bool]:
+        """Reserve a stable send, with its user row atomically when idle. Returns (receipt, new).
+        A transaction resolves duplicates across processes and across compression lineage.
+        A queued receipt has no user row until reserve_queued_prompt_receipt claims it.
+        """
+        now = time.time()
+        def _do(conn):
+            existing = self._prompt_receipt_on_conn(conn, session_id, client_message_id)
+            if existing:
+                return dict(existing), False
+            if not conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
+                raise ValueError("stored session does not exist")
+            row_id = None
+            if not queued:
+                self._check_transcript_write_guards(conn, session_id, None)
+                params = self._message_row_params(session_id, "user", {
+                    "content": text, "display_kind": display_kind}, None, now, keep_reasoning=True)
+                row_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+                self._bump_session_counters(conn, session_id, 1, 0, unit=True)
+            conn.execute("""INSERT INTO tui_prompt_receipts
+                (session_id, client_message_id, payload_hash, text, display_kind, state, user_row_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, client_message_id, payload_hash, text, display_kind,
+                 "queued" if queued else "reserved", row_id, now))
+            return dict(self._prompt_receipt_on_conn(conn, session_id, client_message_id)), True
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def reserve_queued_prompt_receipt(self, session_id: str, client_message_id: str) -> dict | None:
+        """Only a queued receipt may mint the turn's row; later claims are inert."""
+        def _do(conn):
+            receipt = self._prompt_receipt_on_conn(conn, session_id, client_message_id)
+            if not receipt or receipt["state"] != "queued":
+                return None
+            self._check_transcript_write_guards(conn, session_id, None)
+            now = time.time()
+            params = self._message_row_params(session_id, "user", {
+                "content": receipt["text"], "display_kind": receipt["display_kind"]},
+                None, now, keep_reasoning=True)
+            row_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            self._bump_session_counters(conn, session_id, 1, 0, unit=True)
+            conn.execute("""UPDATE tui_prompt_receipts SET session_id = ?, state = 'reserved', user_row_id = ?
+                WHERE session_id = ? AND client_message_id = ? AND state = 'queued'""",
+                (session_id, row_id, receipt["session_id"], client_message_id))
+            return dict(self._prompt_receipt_on_conn(conn, session_id, client_message_id))
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def advance_prompt_receipt(self, session_id: str, client_message_id: str,
+                               previous: str, new_state: str) -> bool:
+        """Persist the execution fence BEFORE calling the model; never re-dispatch 'started'."""
+        if (previous, new_state) not in {("reserved", "started"), ("started", "finished")}:
+            raise ValueError("invalid prompt receipt transition")
+        def _do(conn):
+            receipt = self._prompt_receipt_on_conn(conn, session_id, client_message_id)
+            if not receipt or receipt["state"] != previous:
+                return False
+            return bool(conn.execute("""UPDATE tui_prompt_receipts SET state = ?
+                WHERE session_id = ? AND client_message_id = ? AND state = ?""",
+                (new_state, receipt["session_id"], client_message_id, previous)).rowcount)
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
         ``_RESET_END_REASONS`` count (compression continues one conversation). Never derived from session

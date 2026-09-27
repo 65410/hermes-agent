@@ -1004,6 +1004,24 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
+    identified_id = session.get("_idempotent_active_id")
+    identified_row_id = None
+    if identified_id:
+        try:
+            with _session_db(session) as db:
+                receipt = db.get_prompt_receipt(session["session_key"], identified_id)
+                if receipt is None or not db.advance_prompt_receipt(
+                        session["session_key"], identified_id, "reserved", "started"):
+                    raise RuntimeError("prompt receipt execution fence unavailable")
+                identified_row_id = receipt["user_row_id"]
+        except Exception:
+            logger.warning("Refusing identified turn: execution fence could not be verified", exc_info=True)
+            with session["history_lock"]:
+                session["running"] = False
+                session.pop("_idempotent_active_id", None)
+                session.pop("_submit_user_row", None)
+            _emit("error", sid, {"message": "Could not verify turn receipt; inspect transcript before retrying."})
+            return False
     from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
@@ -1026,7 +1044,8 @@ def _run_prompt_submit(
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
     if not muted:
-        _emit("message.start", sid)
+        _emit("message.start", sid, {"client_message_id": identified_id, "user_row_id": identified_row_id}
+              if identified_id else None)
 
     def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -1036,7 +1055,8 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
+        st.marker_key = _record_turn_marker(session, text,
+            auto_continue=terminal_callback is None and not identified_id,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
         try:
@@ -1066,12 +1086,24 @@ def _run_prompt_submit(
             _recover_turn_exception(sid, session, st, e)
         finally:
             _finish_turn(sid, session, st)
+            if identified_id:
+                try:
+                    with _session_db(session) as db:
+                        if not db.advance_prompt_receipt(
+                                session["session_key"], identified_id, "started", "finished"):
+                            raise RuntimeError("prompt receipt could not be settled")
+                except Exception:
+                    # A later retry sees 'started' and reports uncertainty instead of
+                    # replaying a potentially completed model/tool turn.
+                    logger.warning("Identified turn settled without a durable receipt", exc_info=True)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
             # A stale interim closure must not fire during a later turn.
             st.agent.interim_assistant_callback = None
             with session["history_lock"]:
                 session["running"] = False
+                if identified_id and session.get("_idempotent_active_id") == identified_id:
+                    session.pop("_idempotent_active_id", None)
                 session["last_active"] = time.time()
                 if not st.error_retained:
                     _clear_inflight_turn(session)
