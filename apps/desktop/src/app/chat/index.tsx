@@ -355,12 +355,14 @@ export function ChatRuntimeBoundary({
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
+  const { page: historicalPage, revealOlder } = history
+
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {
-        return history.revealOlder(beforePrepend)
+      if (historicalPage) {
+        return revealOlder(beforePrepend)
       }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
@@ -407,7 +409,7 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
+    [runtimeId, storedId, tailProfile, view, historicalPage, revealOlder]
   )
 
   // An open history page carries its own reach: its first prompt is the anchor,
@@ -417,7 +419,8 @@ export function ChatRuntimeBoundary({
   const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
-  const { revealRow, returnToLatest } = history
+  const leadingRowId = history.page?.leadingRowId ?? null
+  const { revealRow, returnToLatest, revealNewer, error: historyError } = history
 
   const transcriptWindow = useMemo(
     () => ({
@@ -427,9 +430,23 @@ export function ChatRuntimeBoundary({
       returnToLatest,
       currentMessages,
       isHistorical,
-      newerAvailable
+      newerAvailable,
+      revealNewer,
+      historyError,
+      leadingRowId
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [
+      expandWindow,
+      olderAvailable,
+      revealRow,
+      returnToLatest,
+      currentMessages,
+      isHistorical,
+      newerAvailable,
+      revealNewer,
+      historyError,
+      leadingRowId
+    ]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
