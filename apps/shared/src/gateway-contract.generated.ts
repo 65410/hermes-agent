@@ -1667,6 +1667,7 @@ export interface PingResult {
 }
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
+  identified_prompt_submit: boolean
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean

@@ -13368,10 +13368,15 @@
           "per_session_exclusive_submit": {
             "title": "Per Session Exclusive Submit",
             "type": "boolean"
+          },
+          "identified_prompt_submit": {
+            "title": "Identified Prompt Submit",
+            "type": "boolean"
           }
         },
         "required": [
-          "per_session_exclusive_submit"
+          "per_session_exclusive_submit",
+          "identified_prompt_submit"
         ],
         "title": "GatewayCapabilitiesResult",
         "type": "object"

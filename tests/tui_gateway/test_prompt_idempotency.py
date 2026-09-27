@@ -88,6 +88,11 @@ def test_first_send_lost_reply_and_conflict_keep_one_durable_user_row(gateway):
     assert db.get_prompt_receipt(key, "native-1")["state"] == "reserved"
 
 
+def test_capability_advertises_receipt_protocol(gateway):
+    response = server.handle_request({"id": "caps", "method": "gateway.capabilities", "params": {}})
+    assert response["result"]["identified_prompt_submit"] is True
+
+
 def test_simultaneous_first_submit_is_one_durable_turn(gateway):
     db, sid, key, launched, _events = gateway
     with ThreadPoolExecutor(max_workers=2) as pool:
