@@ -5,7 +5,7 @@ import { useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
-import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
+import { announceSalvagedEdit, type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -151,6 +151,7 @@ export function useComposerQueue({
       attachments: cloneAttachments(attachments),
       draft: draftRef.current,
       entryId: entry.id,
+      entryText: entry.displayText ?? entry.text,
       sessionKey: activeQueueSessionKey
     })
     // Edit what the panel SHOWS. A queued `/skill` entry's text is the
@@ -247,6 +248,14 @@ export function useComposerQueue({
 
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
+      // A cancel repaints the pre-edit draft by design — but the dirty edit
+      // buffer is the user's latest work and must stay recoverable (#88621):
+      // publish the salvage notice before the repaint discards it. Only a
+      // buffer that actually diverged from the entry it was editing counts.
+      if (draftRef.current !== queueEdit.entryText) {
+        announceSalvagedEdit(queueEdit.sessionKey, queueEdit.draft, draftRef.current)
+      }
+
       triggerHaptic('cancel')
     }
 
@@ -595,6 +604,11 @@ export function useComposerQueue({
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
+  // An edit whose entry vanished underneath it (drained or deleted by a
+  // background/cross-window path) is torn down WITHOUT touching the composer
+  // when the buffer is dirty: repainting the pre-edit snapshot over unsaved
+  // typed work was the #88621 silent loss. The dirty buffer stays in the
+  // editor (recoverable through the salvage notice) and the edit exits.
   useEffect(() => {
     if (!queueEdit) {
       return
@@ -602,6 +616,15 @@ export function useComposerQueue({
 
     if (queueEdit.sessionKey === activeQueueSessionKey) {
       if (editingQueuedPrompt) {
+        return
+      }
+
+      if (draftRef.current !== queueEdit.entryText) {
+        // Dirty buffer, entry gone: keep the typed text where the user put
+        // it — the editor IS the only copy — and offer it via the notice.
+        announceSalvagedEdit(queueEdit.sessionKey, draftRef.current, draftRef.current)
+        setQueueEditSnapshot(null)
+
         return
       }
 
