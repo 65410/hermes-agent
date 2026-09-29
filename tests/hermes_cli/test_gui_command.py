@@ -318,7 +318,13 @@ def test_gui_quick_entry_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns(quick_entry=True))
 
     assert exc.value.code == 0
-    assert launched == [[str(packaged_exe), "--quick-entry"]]
+    # Linux appends --disable-setuid-sandbox after the sandbox fixup (a
+    # present, non-setuid chrome-sandbox would abort Chromium) — see the
+    # sibling assertion in test_gui_launches_even_when_desktop_entry_install_fails.
+    expected_cmd = [str(packaged_exe), "--quick-entry"]
+    if sys.platform.startswith("linux"):
+        expected_cmd.insert(1, "--disable-setuid-sandbox")
+    assert launched == [expected_cmd]
 
 
 def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):

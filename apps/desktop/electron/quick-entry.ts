@@ -427,7 +427,8 @@ function sessionCanRefuseShortcutsWithoutConflict(): boolean {
 export function createQuickEntryShortcut(
   globalShortcut: GlobalShortcutLike,
   onTrigger: () => void,
-  probePortal: GlobalShortcutsPortalProbe = probeGlobalShortcutsPortalViaCli
+  probePortal: GlobalShortcutsPortalProbe = probeGlobalShortcutsPortalViaCli,
+  sessionCanRefuse: () => boolean = sessionCanRefuseShortcutsWithoutConflict
 ): QuickEntryShortcutController {
   let active: null | string = null
   let state: QuickEntryRegistration = { error: null, registered: false, shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT }
@@ -501,7 +502,7 @@ export function createQuickEntryShortcut(
       let error: QuickEntryRegistrationError = 'taken'
       let detail: undefined | string
 
-      if (sessionCanRefuseShortcutsWithoutConflict()) {
+      if (sessionCanRefuse()) {
         try {
           const probe = await probePortal()
 

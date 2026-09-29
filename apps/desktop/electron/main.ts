@@ -474,6 +474,7 @@ import {
   tagRemoteSessionRows
 } from './profile-session-routing'
 import { createQuickEntryShortcut, hasQuickEntryFlag, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import { createQuickEntryStateRelay, sameQuickEntryState } from './quick-entry-state-relay'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -489,7 +490,6 @@ import {
   createQuitTeardownCoordinator,
   type QuitTeardownTask
 } from './quit-teardown'
-import { createQuickEntryStateRelay, sameQuickEntryState } from './quick-entry-state-relay'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
