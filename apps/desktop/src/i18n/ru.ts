@@ -3622,8 +3622,10 @@ export const ru = defineLocale({
       cron: 'Запланированные задачи',
       profiles: 'Профили',
       agents: 'Агенты',
-      starmap: 'Граф памяти'
+      starmap: 'Граф памяти',
+      extension: 'Расширение'
     },
+
     modelMenu: {
       search: 'Поиск моделей',
       noModels: 'Модели не найдены',

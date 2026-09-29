@@ -5064,8 +5064,10 @@ export const frOverrides = {
       cron: 'Tâches planifiées',
       profiles: 'Profils',
       agents: 'Agents',
-      starmap: 'Graphique de mémoire'
+      starmap: 'Graphique de mémoire',
+      extension: 'Extension'
     },
+
     modelMenu: {
       search: 'Rechercher des modèles',
       noModels: 'Aucun modèle trouvé',

@@ -4654,8 +4654,10 @@ export const en: Translations = {
       cron: 'Scheduled jobs',
       profiles: 'Profiles',
       agents: 'Agents',
-      starmap: 'Starmap'
+      starmap: 'Starmap',
+      extension: 'Extension'
     },
+
     modelMenu: {
       search: 'Search models',
       noModels: 'No models found',
