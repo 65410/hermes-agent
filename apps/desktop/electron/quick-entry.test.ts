@@ -246,7 +246,12 @@ describe('quickEntryWindowBounds', () => {
 describe('createQuickEntryShortcut portal probing (#95132)', () => {
   it("reports 'unavailable' — not 'taken' — when a Linux/Wayland registration fails and no GlobalShortcuts portal answers", async () => {
     const { globalShortcut } = fakeGlobalShortcut({ register: false })
-    const controller = createQuickEntryShortcut(globalShortcut, vi.fn(), async () => ({ available: false }))
+    const controller = createQuickEntryShortcut(
+      globalShortcut,
+      vi.fn(),
+      async () => ({ available: false }),
+      () => true
+    )
 
     const state = await controller.apply({ enabled: true, shortcut: 'Control+Shift+Space' })
 
@@ -266,10 +271,15 @@ describe('createQuickEntryShortcut portal probing (#95132)', () => {
   it('carries the probe detail on the unavailable state for logs and Settings', async () => {
     const { globalShortcut } = fakeGlobalShortcut({ register: false })
 
-    const controller = createQuickEntryShortcut(globalShortcut, vi.fn(), async () => ({
-      available: false,
-      detail: 'busctl: No such file or directory'
-    }))
+    const controller = createQuickEntryShortcut(
+      globalShortcut,
+      vi.fn(),
+      async () => ({
+        available: false,
+        detail: 'busctl: No such file or directory'
+      }),
+      () => true
+    )
 
     const state = await controller.apply({ enabled: true, shortcut: 'Super+-' })
 
@@ -336,8 +346,11 @@ describe('createQuickEntryShortcut portal probing (#95132)', () => {
     // staying stuck at 'unavailable'.
     let portalUp = false
 
-    const controller = createQuickEntryShortcut(globalShortcut, vi.fn(), async () =>
-      portalUp ? { available: true } : { available: false }
+    const controller = createQuickEntryShortcut(
+      globalShortcut,
+      vi.fn(),
+      async () => (portalUp ? { available: true } : { available: false }),
+      () => true
     )
 
     const first = await controller.apply({ enabled: true, shortcut: 'Alt+J' })
@@ -350,6 +363,9 @@ describe('createQuickEntryShortcut portal probing (#95132)', () => {
     expect(second.error).toBeNull()
     expect(second.registered).toBe(true)
     expect(controller.current()).toEqual(second)
+  })
+})
+
 describe('hasQuickEntryFlag', () => {
   it('detects the compositor-keybind summon flag', () => {
     expect(hasQuickEntryFlag(['Hermes', '--quick-entry'])).toBe(true)
