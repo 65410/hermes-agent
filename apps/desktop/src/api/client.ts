@@ -3,6 +3,8 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
+import { gatewaySocketFactory } from '@/api/ws-bridge-socket'
+
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
@@ -41,7 +43,9 @@ export class HermesGateway extends JsonRpcGatewayClient {
       // The channel already answered -32601; note the missing registry in devtools.
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      socketFactory: gatewaySocketFactory
+
     })
   }
 }
