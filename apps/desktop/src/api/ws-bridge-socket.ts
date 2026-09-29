@@ -158,11 +158,57 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
   return btoa(bin)
 }
 
+/**
+ * Chromium 142+ enforces Local Network Access: a plain-`ws://` dial from the
+ * renderer to a private-range origin (Tailscale CGNAT 100.64/10, RFC 1918,
+ * link-local) is gated behind a permission only a secure context can grant —
+ * and the packaged renderer origin is plain http://, so the request stalls
+ * instead of prompting (#54523 F3). Loopback is LNA-exempt and has no TLS
+ * story, so it keeps the native renderer WebSocket; everything else — wss://
+ * (renderer WS pool ignores --use-system-certificates) and non-loopback
+ * ws:// — dials from the MAIN process, which has no LNA layer.
+ */
+export function shouldBridgeWebSocket(url: string): boolean {
+  if (url.startsWith('wss://')) {
+    return true
+  }
+
+  if (!url.startsWith('ws://')) {
+    return false
+  }
+
+  let host: string | null = null
+
+  try {
+    host = new URL(url).hostname
+  } catch {
+    return false
+  }
+
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '[::1]') {
+    return false
+  }
+
+  // IPv4 loopback (127.x.x.x, incl. the 127.0.0.1 common case) and the
+  // IPv6 loopback written bare (rare, but URL.hostname strips brackets).
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+
+  if (v4 && Number(v4[1]) === 127) {
+    return false
+  }
+
+  if (host === '0:0:0:0:0:0:0:1') {
+    return false
+  }
+
+  return true
+}
+
 /** socketFactory for JsonRpcGatewayClient: bridge wss:// through the main
  *  process (private-CA trust), keep native WebSocket for cleartext loopback. */
 export function gatewaySocketFactory(url: string): WebSocket {
   const api = bridgeApi()
-  if (api && url.startsWith('wss://')) {
+  if (api && shouldBridgeWebSocket(url)) {
     return new BridgedWebSocket(url, api) as unknown as WebSocket
   }
   return new WebSocket(url)

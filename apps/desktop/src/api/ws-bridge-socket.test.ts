@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { BridgedWebSocket } from './ws-bridge-socket'
+import { BridgedWebSocket, shouldBridgeWebSocket } from './ws-bridge-socket'
 
 interface RecordedCall {
   method: string
@@ -56,7 +56,8 @@ function makeBridgeApi() {
     api,
     calls,
     listeners,
-    resolveOpen: (token: string, result = { ok: true }) => pendingOpens.get(token)!(result),
+    resolveOpen: (token: string, result: { ok: boolean; error?: string } = { ok: true }) =>
+      pendingOpens.get(token)!(result),
     emit: (token: string, payload: { type: string; data?: string; code?: number; reason?: string }) => {
       for (const cb of [...listeners]) cb(token, payload)
     }
@@ -164,4 +165,37 @@ test('send only flows after open, under the socket token', async () => {
   const sends = calls.filter(c => c.method === 'send')
   assert.equal(sends.length, 1)
   assert.deepEqual(sends[0].args, ['tok-S', 'hello', false])
+})
+
+test('shouldBridgeWebSocket: LNA-gated non-loopback ws:// origins dial through main (#54523 F3)', () => {
+  const bridged = [
+    'wss://gw.example.com/api/ws', // always: renderer WS pool ignores --use-system-certificates
+    'ws://100.79.222.28:9119/api/ws', // Tailscale CGNAT 100.64/10 — the #54523 repro
+    'ws://192.168.1.10:9119/api/ws', // RFC 1918 — same LNA class
+    'ws://10.0.0.5/api/ws',
+    'ws://172.16.0.1/api/ws',
+    'ws://tailnet-host.ts.net:9443/api/ws', // non-loopback hostname, LNA applies
+    'ws://[fd00::1]:9119/api/ws' // ULA IPv6
+  ]
+
+  for (const url of bridged) {
+    assert.equal(shouldBridgeWebSocket(url), true, url)
+  }
+})
+
+test('shouldBridgeWebSocket: loopback ws:// keeps the native renderer WebSocket', () => {
+  const native = [
+    'ws://127.0.0.1:9119/api/ws',
+    'ws://127.0.0.1/api/ws',
+    'ws://localhost:9119/api/ws',
+    'ws://app.localhost/api/ws',
+    'ws://[::1]:9119/api/ws',
+    'ws://0:0:0:0:0:0:0:1/api/ws',
+    'http://127.0.0.1:9119', // not a WS URL at all
+    'not a url'
+  ]
+
+  for (const url of native) {
+    assert.equal(shouldBridgeWebSocket(url), false, url)
+  }
 })
