@@ -2637,6 +2637,7 @@ function WarmSwitchHarness({
     requestGateway,
     routedSessionId: null,
     resetViewSync: cache.resetViewSync,
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
@@ -3440,10 +3441,10 @@ describe('branchStoredSession desktop source tagging', () => {
     })
 
     const messages = [
-      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
-      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
-      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
-      { id: 'a2', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
+      { id: 'q1', rowId: 101, role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', rowId: 102, role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', rowId: 103, role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
+      { id: 'a2', rowId: 104, role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
     ]
 
     setSessions([storedSession({ id: 'tile-stored', message_count: messages.length })])
@@ -3468,9 +3469,11 @@ describe('branchStoredSession desktop source tagging', () => {
       })
     ).resolves.toBe(true)
 
+    // The cut is addressed by the terminal bubble's durable row id (#80973):
+    // a merged-message count has no stable mapping onto the backend's raw rows.
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'tile-runtime',
-      count: 2
+      up_to_row_id: 102
     })
   })
 
