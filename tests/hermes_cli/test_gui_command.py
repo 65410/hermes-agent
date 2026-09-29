@@ -318,13 +318,18 @@ def test_gui_quick_entry_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns(quick_entry=True))
 
     assert exc.value.code == 0
-    # Linux appends --disable-setuid-sandbox after the sandbox fixup (a
+    # On Linux, desktop-entry registration runs inside cmd_gui before the
+    # launch: it probes the interpreter with `python -I -c 'import
+    # hermes_cli.main'` (hermes_cli/linux_desktop_entry._can_import_hermes_cli),
+    # which lands in the same mocked subprocess.run. Assert the LAUNCH command
+    # rather than the whole call list, and allow the probe to precede it.
+    # Linux also appends --disable-setuid-sandbox after the sandbox fixup (a
     # present, non-setuid chrome-sandbox would abort Chromium) — see the
     # sibling assertion in test_gui_launches_even_when_desktop_entry_install_fails.
     expected_cmd = [str(packaged_exe), "--quick-entry"]
     if sys.platform.startswith("linux"):
         expected_cmd.insert(1, "--disable-setuid-sandbox")
-    assert launched == [expected_cmd]
+    assert launched[-1] == expected_cmd
 
 
 def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
