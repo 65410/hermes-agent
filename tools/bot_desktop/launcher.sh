@@ -274,12 +274,21 @@ trap 'kill "$XVNC_PID" 2>/dev/null || true' EXIT
 # "unix" parsing as a hostname. The socket file appearing is the same signal the e2e screen-record
 # action waits on and needs no X client at all. Later X clients keep ":N": by then the socket
 # exists, so libxcb's unix-first connect hits it and never falls back to TCP.
+# WSLg hosts accept either socket shape: their /tmp/.X11-unix is a read-only mount, so Xvnc's
+# path-socket bind fails (_XSERVTransSocketUNIXCreateListener) and it serves the display over the
+# ABSTRACT socket @/tmp/.X11-unix/XN instead — no filesystem node, visible only as an @-prefixed
+# line in /proc/net/unix. Clients reach it with the same bare ":N" (libxcb tries the abstract
+# socket before TCP), so readiness is the path node OR the abstract line, never an X client.
+xvnc_display_ready() {
+  [ -S "$xsock" ] && return 0
+  grep -q "@${xsock}\$" /proc/net/unix 2>/dev/null
+}
 for _ in $(seq 1 100); do
-  [ -S "$xsock" ] && break
+  xvnc_display_ready && break
   kill -0 "$XVNC_PID" 2>/dev/null || { echo "Xvnc exited during startup" >&2; exit 1; }
   sleep 0.1
 done
-[ -S "$xsock" ] || { echo "Xvnc did not become ready" >&2; exit 1; }
+xvnc_display_ready || { echo "Xvnc did not become ready" >&2; exit 1; }
 
 setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool assume a known layout
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true

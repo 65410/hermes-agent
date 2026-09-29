@@ -32,8 +32,22 @@ def xvnc_x_socket():
 
 
 def _bind_x_socket_line() -> str:
+    """The stub Xvnc's LAST line: bind the display's path socket and hold it. A bind-and-exit
+    leaves nothing for the readiness wait to observe — the kernel unlinks the node with the fd —
+    so the stub exec's into the holder; the launcher's EXIT-trap kill of XVNC_PID reaps it (and
+    the node with it) when the script ends."""
     real_python = shutil.which("python3")
-    return f"'{real_python}' -c 'import socket; socket.socket(socket.AF_UNIX).bind(\"{_XSOCK}\")'\n"
+    return (f"exec '{real_python}' -c 'import socket, time; "
+            f"s = socket.socket(socket.AF_UNIX); s.bind(\"{_XSOCK}\"); time.sleep(60)'\n")
+
+
+def _bind_abstract_socket_line() -> str:
+    """The WSLg shape (#123130's own host): /tmp/.X11-unix is a read-only mount there, so only the
+    ABSTRACT socket — bound under the \\0-prefixed name, no filesystem node — ever exists. It is
+    visible only as an @-prefixed line in /proc/net/unix."""
+    real_python = shutil.which("python3")
+    return (f"exec '{real_python}' -c 'import socket, time; "
+            f"s = socket.socket(socket.AF_UNIX); s.bind(\"\\0{_XSOCK}\"); time.sleep(60)'\n")
 
 
 def _write_common_stubs(bindir: Path) -> None:
@@ -63,8 +77,7 @@ def test_xvnc_never_sends_the_holders_clipboard_to_watchers(tmp_path, xvnc_x_soc
     bindir.mkdir()
     argv_log = tmp_path / "xvnc-argv"
     (bindir / "Xvnc").write_text(
-        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\nsleep 0.3\n{_bind_x_socket_line()}exec sleep 5\n',
-        encoding="utf-8",
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\nsleep 0.3\n{_bind_x_socket_line()}', encoding="utf-8",
     )
     _write_common_stubs(bindir)
     subprocess.run(["bash", str(LAUNCHER)], env=_launcher_env(bindir, tmp_path), check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
@@ -89,7 +102,7 @@ def test_readiness_probe_waits_for_the_x_socket_itself(tmp_path, xvnc_x_socket):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     probe_log = tmp_path / "xdpyinfo-calls"
-    (bindir / "Xvnc").write_text(f'#!/bin/sh\nsleep 0.3\n{_bind_x_socket_line()}exec sleep 5\n', encoding="utf-8")
+    (bindir / "Xvnc").write_text(f'#!/bin/sh\nsleep 0.3\n{_bind_x_socket_line()}', encoding="utf-8")
     _write_common_stubs(bindir)
     # No real X server backs the stub socket, so any X client the launcher drives at the display
     # fails — matching libxcb, which has no display string that is both unix-only and parseable.
@@ -98,4 +111,22 @@ def test_readiness_probe_waits_for_the_x_socket_itself(tmp_path, xvnc_x_socket):
     (bindir / "xdpyinfo").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{probe_log}"\nexit 1\n', encoding="utf-8")
     (bindir / "xdpyinfo").chmod(0o755)
     subprocess.run(["bash", str(LAUNCHER)], env=_launcher_env(bindir, tmp_path), check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    assert not probe_log.exists(), "readiness must not drive an X client at the display"
+
+
+def test_readiness_accepts_the_abstract_socket_alone(tmp_path, xvnc_x_socket):
+    """The reporter's own host shape (#123130): WSLg mounts /tmp/.X11-unix read-only, Xvnc's
+    path-socket bind fails and only the ABSTRACT socket exists — no filesystem node for [ -S ]
+    to find, so waiting for the path node alone would exit "Xvnc did not become ready" on the
+    exact host that filed the bug. The @-prefixed /proc/net/unix line must count as ready."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    probe_log = tmp_path / "xdpyinfo-calls"
+    (bindir / "Xvnc").write_text(f'#!/bin/sh\nsleep 0.3\n{_bind_abstract_socket_line()}', encoding="utf-8")
+    _write_common_stubs(bindir)
+    # Same guard as the path-socket test: an X client cannot answer for this display either way.
+    (bindir / "xdpyinfo").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{probe_log}"\nexit 1\n', encoding="utf-8")
+    (bindir / "xdpyinfo").chmod(0o755)
+    subprocess.run(["bash", str(LAUNCHER)], env=_launcher_env(bindir, tmp_path), check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+    assert not _XSOCK.exists(), "the WSLg shape never binds the path socket"
     assert not probe_log.exists(), "readiness must not drive an X client at the display"
