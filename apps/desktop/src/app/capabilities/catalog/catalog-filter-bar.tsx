@@ -1,5 +1,5 @@
-import { useId, useState, type ReactNode } from 'react'
-import { IconFilter2, IconCategory, IconDatabase } from '@tabler/icons-react'
+import { IconCategory, IconDatabase, IconFilter2 } from '@tabler/icons-react'
+import { type ReactNode, useId, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -32,55 +32,58 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const [mode, setMode] = useState<'categories' | 'sources'>('categories')
   const [expanded, setExpanded] = useState(false)
   const [more, setMore] = useState(false)
+
   const rows = mode === 'categories'
     ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
     : props.sources.map(value => ({ value, label: catalogLabel(value) }))
+
   const selected = props.facets[mode]
   const onSelect = mode === 'categories' ? props.onCategory : props.onSource
   const visible = rows.filter((row, index) => index < 3 || selected.includes(row.value))
   const overflow = rows.filter(row => !visible.includes(row))
   const activeCount = props.facets.categories.length + props.facets.sources.length + props.facets.tags.length
+
   return (
     <div className="catalog-filter-bar" data-catalog-filters>
       <div className="catalog-filter-row">
-        <SegmentedControl options={[{ id: 'categories', label: c.category, icon: IconCategory }, { id: 'sources', label: c.source, icon: IconDatabase }]} value={mode} onChange={setMode} />
+        <SegmentedControl onChange={setMode} options={[{ id: 'categories', label: c.category, icon: IconCategory }, { id: 'sources', label: c.source, icon: IconDatabase }]} value={mode} />
         <div className="catalog-filter-chips" data-expanded={false}>
-          <Button size="xs" variant={!selected.length ? 'default' : 'outline'} aria-pressed={!selected.length} onClick={() => onSelect(null)}>{t.skills.all}</Button>
+          <Button aria-pressed={!selected.length} onClick={() => onSelect(null)} size="xs" variant={!selected.length ? 'default' : 'outline'}>{t.skills.all}</Button>
           <span aria-hidden className="px-1 text-(--ui-text-quaternary)">/</span>
-          {visible.map(row => <Button key={row.value} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'} aria-pressed={selected.includes(row.value)} onClick={() => onSelect(row.value)}>{row.label}</Button>)}
-          {overflow.length > 0 && <Popover open={more} onOpenChange={setMore}>
-            <PopoverTrigger asChild><Button size="xs" variant="secondary" aria-label={c.more}>{`+${overflow.length}`}</Button></PopoverTrigger>
-            <PopoverContent align="start" variant="menu" className="w-72 max-h-80 overflow-y-auto p-2">
-              <div className="flex flex-wrap gap-1.5">{overflow.map(row => <Button key={row.value} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'} aria-pressed={selected.includes(row.value)} onClick={() => onSelect(row.value)}>{row.label}</Button>)}</div>
+          {visible.map(row => <Button aria-pressed={selected.includes(row.value)} key={row.value} onClick={() => onSelect(row.value)} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}
+          {overflow.length > 0 && <Popover onOpenChange={setMore} open={more}>
+            <PopoverTrigger asChild><Button aria-label={c.more} size="xs" variant="secondary">{`+${overflow.length}`}</Button></PopoverTrigger>
+            <PopoverContent align="start" className="w-72 max-h-80 overflow-y-auto p-2" variant="menu">
+              <div className="flex flex-wrap gap-1.5">{overflow.map(row => <Button aria-pressed={selected.includes(row.value)} key={row.value} onClick={() => onSelect(row.value)} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}</div>
             </PopoverContent>
           </Popover>}
         </div>
         <div className="catalog-filter-trigger">
-          <span id={`${panelId}-label`} className="text-[0.625rem] font-medium uppercase tracking-wider text-(--ui-text-tertiary)">{c.filters}{activeCount > 0 && ` · ${activeCount}`}</span>
-          <Popover open={expanded} onOpenChange={setExpanded}>
+          <span className="text-[0.625rem] font-medium uppercase tracking-wider text-(--ui-text-tertiary)" id={`${panelId}-label`}>{c.filters}{activeCount > 0 && ` · ${activeCount}`}</span>
+          <Popover onOpenChange={setExpanded} open={expanded}>
             <PopoverTrigger asChild>
-              <Button size="icon-xs" variant={expanded ? 'default' : 'secondary'} aria-labelledby={`${panelId}-label`}>
+              <Button aria-labelledby={`${panelId}-label`} size="icon-xs" variant={expanded ? 'default' : 'secondary'}>
                 <IconFilter2 />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" side="bottom" variant="menu" className="w-80 max-w-[calc(100vw-2rem)] p-4" aria-label={c.filters}>
+            <PopoverContent align="end" aria-label={c.filters} className="w-80 max-w-[calc(100vw-2rem)] p-4" side="bottom" variant="menu">
               <div className="flex max-h-[min(60vh,28rem)] flex-col gap-4 overflow-y-auto" data-catalog-expanded-filters>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium">{c.filters}</span>
-                  <Button size="inline" variant="text" onClick={props.onClear}>{c.clearFilters}</Button>
+                  <Button onClick={props.onClear} size="inline" variant="text">{c.clearFilters}</Button>
                 </div>
                 <div className="flex flex-col gap-2">
                   <span className="text-xs text-(--ui-text-tertiary)">{c.sortBy}</span>
                   {props.sortControl}
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <Button size="xs" variant={props.facets.installedOnly ? 'default' : 'outline'} aria-pressed={props.facets.installedOnly} onClick={props.onInstalled}>{c.installed}</Button>
+                  <Button aria-pressed={props.facets.installedOnly} onClick={props.onInstalled} size="xs" variant={props.facets.installedOnly ? 'default' : 'outline'}>{c.installed}</Button>
                   <span className="text-xs text-(--ui-text-tertiary)">{c.results(props.resultCount)}</span>
                 </div>
                 {props.tags.length > 0 && <div className="flex flex-col gap-2">
                   <span className="text-xs text-(--ui-text-tertiary)">{c.tags}</span>
                   <div className="flex flex-wrap gap-1.5">
-                    {props.tags.map(row => <Button key={row.value} size="xs" variant={props.facets.tags.includes(row.value) ? 'default' : 'outline'} aria-pressed={props.facets.tags.includes(row.value)} onClick={() => props.onTag(row.value)}>{row.label}</Button>)}
+                    {props.tags.map(row => <Button aria-pressed={props.facets.tags.includes(row.value)} key={row.value} onClick={() => props.onTag(row.value)} size="xs" variant={props.facets.tags.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}
                   </div>
                 </div>}
                 {props.actions && <div className="flex flex-wrap items-center gap-2">{props.actions}</div>}

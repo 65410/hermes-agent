@@ -1,10 +1,9 @@
-import { CatalogDiscovery } from './catalog-discovery'
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
 import { Masonry } from '@/components/ui/masonry'
@@ -22,6 +21,7 @@ import { CatalogCard, type CatalogCardVariant } from './catalog-card'
 import { type CatalogEntry, type CatalogKind, useCatalog } from './catalog-data'
 import { CatalogDetail } from './catalog-detail'
 import { CatalogDetailDialog } from './catalog-detail-dialog'
+import { CatalogDiscovery } from './catalog-discovery'
 import { CatalogFilterBar } from './catalog-filter-bar'
 import { CatalogInstallSwitch } from './catalog-install-switch'
 import { CatalogListRow } from './catalog-list-row'
@@ -218,7 +218,6 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const card = (entry: CatalogEntry, accentIndex: number, variant: CatalogCardVariant = 'default') => (
     <CatalogCard
-      variant={variant}
       accentIndex={accentIndex}
       action={entryAction(entry)}
       entry={entry}
@@ -227,6 +226,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
       onOpen={openEntry}
       onSearch={searchFor}
       onTag={filters.toggleTag}
+      variant={variant}
     />
   )
 
@@ -282,11 +282,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           >
             <SearchField
               containerClassName="w-full min-w-0 rounded-2xl bg-(--dt-card)"
-              leadingContent={<Badge variant="muted" size="xs">{kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills}</Badge>}
+              leadingContent={<Badge size="xs" variant="muted">{kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills}</Badge>}
               onChange={value => onQueryChange?.(value)}
               placeholder={kind === 'plugins' ? c.searchPlugins : c.searchSkills}
-              value={query ?? ''}
-              variant="box"
               trailingAction={<div
               className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end"
               data-catalog-actions
@@ -306,21 +304,23 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                 </Button>
               </Tip>
             </div>}
+              value={query ?? ''}
+              variant="box"
             />
           </header>
           <CatalogFilterBar
+            actions={actions}
             categories={catalogCategories(visible, kind)}
-            sources={catalogSources(visible)}
-            tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
             facets={facets}
             onCategory={filters.toggleCategory}
+            onClear={clearFilters}
+            onInstalled={filters.toggleInstalled}
             onSource={filters.toggleSource}
             onTag={filters.toggleTag}
-            onInstalled={filters.toggleInstalled}
-            onClear={clearFilters}
             resultCount={filtered.length}
             sortControl={sortControl}
-            actions={actions}
+            sources={catalogSources(visible)}
+            tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
           />
           {notice}
           {error && entries.length > 0 && (
@@ -359,7 +359,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
                   >
                     {discover ? (
-                      <CatalogDiscovery entries={filtered} kind={kind} card={card} onCategory={filters.chooseCategory} actions={actions} />
+                      <CatalogDiscovery actions={actions} card={card} entries={filtered} kind={kind} onCategory={filters.chooseCategory} />
                     ) : (
                       <div className="catalog-filtered-results py-2">
                         {CATALOG_MASONRY ? (

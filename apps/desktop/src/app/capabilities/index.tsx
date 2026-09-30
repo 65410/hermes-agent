@@ -173,7 +173,6 @@ export function CapabilitiesView({
     <PageSearchShell
       {...props}
       activeTab={mode}
-      tabsAlign="start"
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
       // Catalogs keep search beside their results; Connectors owns its field too.
@@ -193,6 +192,7 @@ export function CapabilitiesView({
         { id: 'connectors', label: t.connectorsPage.title },
         { id: 'plugins', label: t.skills.tabPlugins }
       ]}
+      tabsAlign="start"
     >
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}

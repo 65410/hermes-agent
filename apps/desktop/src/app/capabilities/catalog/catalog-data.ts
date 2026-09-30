@@ -1,8 +1,9 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
-import { officialCatalogArtwork } from './catalog-artwork'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { queryClient } from '@/lib/query-client'
+
+import { officialCatalogArtwork } from './catalog-artwork'
 
 export type CatalogKind = 'skills' | 'plugins'
 

@@ -81,9 +81,9 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
         CARD_ACCENTS[accentIndex % CARD_ACCENTS.length]
       )}
       data-catalog-card
+      data-catalog-editorial-art={(variant !== 'hero' && entry.imageUrl?.includes("official-art")) || undefined}
       data-catalog-variant={variant}
       data-entry-id={entry.id}
-      data-catalog-editorial-art={(variant !== 'hero' && entry.imageUrl?.includes("official-art")) || undefined}
     >
       {variant !== 'hero' && entry.imageUrl && ((variant !== 'compact' && variant !== 'showcase') || entry.imageUrl.includes('official-art')) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl} src={entry.imageUrl} />}
       {variant !== 'default' && <div className="catalog-card-topline">

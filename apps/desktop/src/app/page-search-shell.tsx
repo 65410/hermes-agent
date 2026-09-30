@@ -109,7 +109,7 @@ export function PageSearchShell({
             </div>
             {hasTabs ? (
               <div className={cn('flex min-w-0 items-center', tabsAlign === 'start' ? 'justify-start' : 'justify-center')} data-tour="page-tabs">
-                <ShellTabs align={tabsAlign} activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} />
+                <ShellTabs activeTab={activeTab} align={tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
               </div>
             ) : (
               <span />
