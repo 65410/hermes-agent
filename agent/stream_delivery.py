@@ -367,7 +367,9 @@ class StreamDeliveryMixin:
         """Hand a delta to the execution-trace recorder (it throttles into Relay marks)."""
         from hermes_cli.observability.relay_traces import note_stream_delta
 
-        note_stream_delta(self.session_id or "", getattr(self, "_current_api_request_id", "") or "", kind, text)
+        note_stream_delta(
+            getattr(self, "session_id", "") or "", getattr(self, "_current_api_request_id", "") or "", kind, text
+        )
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify the display layer that the model is generating tool call arguments (spinner for large payloads)."""
