@@ -40,6 +40,8 @@ interface PreviewBrowserBarProps {
   importState?: PenImportStripState
   loading: boolean
   onBack: () => void
+  /** The pane's Close — the one visible way out of a full-width Browser. */
+  onClose?: () => void
   onFlushComments?: () => void
   onForward: () => void
   onImport?: (mode: 'page' | 'selection') => void
@@ -121,6 +123,7 @@ export function PreviewBrowserBar({
   importState,
   loading,
   onBack,
+  onClose,
   onFlushComments,
   onForward,
   onImport,
@@ -303,6 +306,12 @@ export function PreviewBrowserBar({
         label={devToolsOpen ? copy.hideDevTools : copy.openDevTools}
         onSelect={onToggleDevTools}
       />
+      {/* The last glyph is the way OUT: a Browser that filled the layout has
+          no strip ✕ in reach, and the only other close is asking the agent
+          (#92500). Same verb the tab carries — the pane routes it. */}
+      {onClose && (
+        <PaneStripGlyph icon={<Codicon name="close" size="0.8125rem" />} label={t.common.close} onSelect={onClose} />
+      )}
     </div>
   )
 

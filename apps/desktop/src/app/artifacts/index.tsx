@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { getAllSessionMessages, listAllProfileSessions } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -143,9 +143,12 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Canvases load beside the transcript mine — filesystem library, not
       // message parsing — so a library-only failure can't take the page down.
       const [{ artifacts: nextArtifacts, failures }, canvases] = await Promise.all([
-        loadArtifactsForSessions(
-          sessions,
-          async session => (await getAllSessionMessages(session.id, session.profile)).messages
+        loadArtifactsForSessions(sessions, (session, page) =>
+          getSessionMessages(session.id, session.profile, {
+            ...page,
+            includeCompacted: true,
+            order: 'oldest'
+          })
         ),
         loadCanvasArtifacts()
       ])
