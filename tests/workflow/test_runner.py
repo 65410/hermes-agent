@@ -111,9 +111,14 @@ def test_poll_url_resumes_when_the_world_answers(tmp_path, monkeypatch):
         def log_message(self, *_args):
             return
 
+    from tools.url_safety import _reset_allow_private_cache
+
     server = HTTPServer(("127.0.0.1", 0), Ready)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_address[1]}/ready"
+    # Loopback is a private target: polling it is the explicit security opt-in, not the default.
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+    _reset_allow_private_cache()
     try:
         _put(
             monkeypatch,
@@ -151,6 +156,7 @@ def test_poll_url_resumes_when_the_world_answers(tmp_path, monkeypatch):
     finally:
         set_execute_fn(None)
         server.shutdown()
+        _reset_allow_private_cache()
 
 
 def test_poll_wait_parks_on_the_bus_not_a_timer(tmp_path, monkeypatch):

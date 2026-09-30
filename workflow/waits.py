@@ -11,12 +11,14 @@ The ticks are also the boot path. A timer thread does not survive a restart, so
 
 from __future__ import annotations
 
+import logging
 import time
-import urllib.request
 
 from workflow.runtime import arm, emit, lock_for, spawn
 from workflow.store import list_runs, load_run, save_run
 from workflow.topology import config_of, parse_poll, parse_wait_seconds, succs, title_of
+
+logger = logging.getLogger(__name__)
 
 
 def park_human(state: dict, step: dict, iteration: int) -> None:
@@ -114,10 +116,20 @@ def arm_timer(run_id: str, seconds: float) -> None:
 
 
 def http_ok(url: str) -> bool:
+    """A poll wait's probe. The URL is authored in a model-editable workflow, so it goes through
+    Hermes's one outbound policy: ``is_safe_url`` admission, then the SSRF-safe client that pins
+    each connection (every redirect hop included) to a validated address. Private targets need
+    ``security.allow_private_urls``; cloud metadata is refused regardless."""
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
+
+    if not is_safe_url(url):
+        logger.warning("workflow poll refused an unsafe URL: %s", url)
+        return False
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            return 200 <= int(getattr(resp, "status", 200)) < 300
-    except Exception:
+        with create_ssrf_safe_client(timeout=10, follow_redirects=True) as client:
+            return 200 <= client.get(url).status_code < 300
+    except Exception as exc:
+        logger.debug("workflow poll of %s failed: %s", url, exc)
         return False
 
 
