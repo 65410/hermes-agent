@@ -31,6 +31,9 @@ LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
+SESSION_ID_KEY = "hermes.session_id"
+PARENT_SESSION_ID_KEY = "hermes.parent_session_id"
+TURN_ID_KEY = "hermes.turn_id"
 RELAY_PLUGINS_EXECUTION_CONSUMER = "hermes.nemo_relay.plugins"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
 
@@ -447,6 +450,8 @@ class RelayRuntime:
         Subagents parent under their spawning turn/session handle (``resolve_parent`` creates the parent when
         unknown). ``exit_fallback``: at interpreter shutdown the executor refuses futures; push synchronously."""
         parent_handle = None
+        # Subscribers attribute every child event to a Hermes session through this scope.
+        scope_metadata[SESSION_ID_KEY] = session.session_id
         if session.parent_session_id:
             with self._sessions_lock:
                 parent_handle = self._subagent_parent_handles.get(session.session_id)
@@ -455,6 +460,7 @@ class RelayRuntime:
                 if parent is not None:
                     parent_handle = parent.handle
             scope_metadata["nemo_relay_scope_role"] = "subagent"
+            scope_metadata[PARENT_SESSION_ID_KEY] = session.parent_session_id
         context = contextvars.Context()
         args = (self.relay.scope.push, SESSION_SCOPE, self.relay.ScopeType.Agent)
         push_kwargs.update(handle=parent_handle, metadata=scope_metadata, input=_scope_input(session.cwd))
@@ -1053,7 +1059,7 @@ class RelaySessionCoordinator:
             turn_metadata.update(
                 runtime_metadata(
                     host.runtime_id,
-                    **{"hermes.execution_surface": lease.platform or "unknown"},
+                    **{"hermes.execution_surface": lease.platform or "unknown", TURN_ID_KEY: turn_id},
                 )
             )
             turn.handle = _warn_on_error(
