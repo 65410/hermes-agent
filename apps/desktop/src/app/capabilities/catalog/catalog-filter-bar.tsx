@@ -32,6 +32,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const [mode, setMode] = useState<'categories' | 'sources'>('categories')
   const [expanded, setExpanded] = useState(false)
   const [allChips, setAllChips] = useState(false)
+
   const rows = mode === 'categories'
     ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
     : props.sources.map(value => ({ value, label: catalogLabel(value) }))

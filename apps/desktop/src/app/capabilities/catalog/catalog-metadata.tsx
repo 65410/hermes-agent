@@ -49,7 +49,8 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
 }
 
 export function CatalogRating({ entry }: { entry: CatalogEntry }) {
-  if (entry.stars === null || entry.stars <= 0) return null
+  if (entry.stars === null || entry.stars <= 0) {return null}
+
   return (
     <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
       <Codicon name="star-full" size="0.65rem" />

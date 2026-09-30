@@ -1,5 +1,5 @@
-import type { CatalogEntry } from './catalog-data'
 import type { CatalogCardVariant } from './catalog-card'
+import type { CatalogEntry } from './catalog-data'
 
 export const BENTO_COLUMNS = 4
 
@@ -51,8 +51,9 @@ export function packBento(items: CatalogEntry[], columns = BENTO_COLUMNS, maxRow
   const rest = queue.filter(entry => !heroes.includes(entry))
   const occupied = new Set<string>()
   const taken = (column: number, row: number) => occupied.has(`${column},${row}`)
+
   const claim = (column: number, row: number, w: number, h: number) => {
-    for (let y = row; y < row + h; y++) for (let x = column; x < column + w; x++) occupied.add(`${x},${y}`)
+    for (let y = row; y < row + h; y++) {for (let x = column; x < column + w; x++) {occupied.add(`${x},${y}`)}}
   }
 
   const tiles: BentoTile[] = heroes.map((entry, band) => {
@@ -66,17 +67,18 @@ export function packBento(items: CatalogEntry[], columns = BENTO_COLUMNS, maxRow
     for (let column = 0; column < columns && rest.length; ) {
       if (taken(column, row)) {
         column++
+
         continue
       }
 
       let run = 0
 
-      while (column + run < columns && !taken(column + run, row)) run++
+      while (column + run < columns && !taken(column + run, row)) {run++}
 
       const w = wides > 0 && run >= 2 ? 2 : 1
       const entry = rest.shift()!
 
-      if (w === 2) wides--
+      if (w === 2) {wides--}
       claim(column, row, w, 1)
       tiles.push({ entry, variant: 'compact', column, row, w, h: 1 })
       column += w

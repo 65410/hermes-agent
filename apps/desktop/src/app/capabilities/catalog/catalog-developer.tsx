@@ -12,16 +12,16 @@ export function CatalogDeveloper({ kind, actions }: { kind: CatalogKind; actions
     <section data-catalog-section="developer">
       <header className="catalog-section-heading"><h2>Developer Mode</h2></header>
       <div className="catalog-developer">
-        <div className="catalog-developer-art" aria-hidden />
+        <div aria-hidden className="catalog-developer-art" />
         <div className="catalog-developer-content">
-          <span className="catalog-developer-mark" aria-hidden />
+          <span aria-hidden className="catalog-developer-mark" />
           <h3>Build for Hermes</h3>
           <p className="text-sm text-(--ui-text-secondary)">Built a tool, connector, plugin, or Mod?<br />Want to but don’t know how?</p>
           <div className="catalog-developer-ctas">
-            <Button variant="default" size="sm" onClick={() => void openExternalLink('https://github.com/NousResearch/hermes-agent/compare')}>
+            <Button onClick={() => void openExternalLink('https://github.com/NousResearch/hermes-agent/compare')} size="sm" variant="default">
               Submit Mod<Codicon name="arrow-up-right" />
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => void openExternalLink(kind === 'plugins' ? 'https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog' : 'https://hermes-agent.nousresearch.com/docs/skills/')}>
+            <Button onClick={() => void openExternalLink(kind === 'plugins' ? 'https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog' : 'https://hermes-agent.nousresearch.com/docs/skills/')} size="sm" variant="secondary">
               Developer Docs<Codicon name="arrow-up-right" />
             </Button>
           </div>

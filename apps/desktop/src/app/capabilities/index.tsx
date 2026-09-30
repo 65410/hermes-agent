@@ -1,3 +1,5 @@
+import './ui/page.css'
+
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -19,7 +21,6 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { syncCatalogArcs } from './catalog/catalog-arc'
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { ConnectorsTab } from './connectors/connectors-tab'
-import './ui/page.css'
 import { PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SKILLS_QUERY_KEY, skillSearchTerms, useSkillsQuery } from './skills/skills-data'
