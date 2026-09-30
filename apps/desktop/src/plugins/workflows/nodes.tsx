@@ -1,5 +1,13 @@
 import { Button, cn, Codicon, GlyphSpinner, PRIMARY_ICON_FACE, type SpinnerName } from '@hermes/plugin-sdk'
-import { Handle, type Node, type NodeProps, Position, type ReactFlowState, useStore, useUpdateNodeInternals } from '@xyflow/react'
+import {
+  Handle,
+  type Node,
+  type NodeProps,
+  Position,
+  type ReactFlowState,
+  useStore,
+  useUpdateNodeInternals
+} from '@xyflow/react'
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 import { useFlowDir, usePorts } from './direction'
@@ -351,17 +359,7 @@ function NodeMeta({ rt, config, elapsed }: { rt: StepRuntime; config: StepConfig
 // lit it on all four cards in the loop body at once, every one of them reading
 // "take 2" — because the iteration belongs to the loop, not to the steps it
 // sweeps up.
-function NodeHead({
-  def,
-  config,
-  rt,
-  play
-}: {
-  def: StepDef
-  config: StepConfig
-  rt: StepRuntime
-  play?: boolean
-}) {
+function NodeHead({ def, config, rt, play }: { def: StepDef; config: StepConfig; rt: StepRuntime; play?: boolean }) {
   return (
     <div className="node-head">
       <KindMark kind={kindMarkOf(def)} title={KIND_LABEL[def.kind]} />
@@ -423,7 +421,8 @@ const VERDICT_LEAD = /^(?:group\s+)?(?:PASS|FAIL)\s*(?:·|→)\s*/
 
 function unwrapSummary(text: string) {
   const trimmed = text.replace(VERDICT_LEAD, '').trim()
-  return trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  return trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
     ? trimmed.slice(1, -1)
     : trimmed
 }

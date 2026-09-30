@@ -58,16 +58,7 @@ interface Commit {
   takeSnapshot: () => void
 }
 
-export function useCommit({
-  dir,
-  dirRef,
-  docId,
-  graphRef,
-  runRef,
-  setEdges,
-  setNodes,
-  takeSnapshot
-}: Commit) {
+export function useCommit({ dir, dirRef, docId, graphRef, runRef, setEdges, setNodes, takeSnapshot }: Commit) {
   // In-flight timers for an agent build, and the flag that lets cards glide to
   // their new ranks while one is playing.
   const brush = useRef<number[]>([])

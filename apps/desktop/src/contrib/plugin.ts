@@ -19,7 +19,7 @@ import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } 
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { registry } from './registry'
-import { type PluginServerRequestHandler, onPluginServerRequest } from './server-request-tap'
+import { onPluginServerRequest, type PluginServerRequestHandler } from './server-request-tap'
 import type { Contribution } from './types'
 
 export type { PluginServerRequestHandler } from './server-request-tap'

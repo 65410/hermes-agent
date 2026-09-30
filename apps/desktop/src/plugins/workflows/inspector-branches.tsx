@@ -226,7 +226,10 @@ export function BranchEditor({
                     onClick={() =>
                       set({
                         ...when,
-                        checks: [...when.checks, { field: 'verdict', op: 'is', step: steps[0]?.id ?? '', value: 'PASS' }]
+                        checks: [
+                          ...when.checks,
+                          { field: 'verdict', op: 'is', step: steps[0]?.id ?? '', value: 'PASS' }
+                        ]
                       })
                     }
                     size="xs"

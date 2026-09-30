@@ -75,4 +75,3 @@ export function dispatchPluginServerRequest(request: ScopedServerRequest): boole
 
   return false
 }
-

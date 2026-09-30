@@ -185,9 +185,7 @@ export function Timeline({ p }: { p: Player }) {
   const tipHead = scrub?.head ?? p.head
   const tipPct = scrub ? scrub.ratio * 100 : pct
   const tipLabel = armed
-    ? [fmtScrub(elapsedAt(p.events, tipHead)), splits[Math.max(0, tipHead - 1)]?.label]
-        .filter(Boolean)
-        .join(' · ')
+    ? [fmtScrub(elapsedAt(p.events, tipHead)), splits[Math.max(0, tipHead - 1)]?.label].filter(Boolean).join(' · ')
     : ''
 
   // Run control, not a view control: play starts or resumes the scenario;
@@ -271,11 +269,7 @@ export function Timeline({ p }: { p: Player }) {
       >
         <div className={`tl-fill${p.live ? '' : ' hist'}`} style={{ width: `${pct}%` }} />
         {p.checkpoints.map(c => (
-          <span
-            className="tl-tick"
-            key={c.no}
-            style={{ left: `${total ? ((c.at + 1) / total) * 100 : 0}%` }}
-          />
+          <span className="tl-tick" key={c.no} style={{ left: `${total ? ((c.at + 1) / total) * 100 : 0}%` }} />
         ))}
         {splits.map((s, i) =>
           s ? (

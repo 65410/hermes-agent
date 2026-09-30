@@ -178,7 +178,9 @@ export function usePlayer(planOf: () => RunPlan): Player {
     const waiting = [...incoming].reverse().find(e => e.type === 'HumanWaiting')
 
     const answered = waiting
-      ? incoming.some(e => e.type === 'HumanResponded' && e.payload.nodeId === waiting.payload.nodeId && e.seq > waiting.seq)
+      ? incoming.some(
+          e => e.type === 'HumanResponded' && e.payload.nodeId === waiting.payload.nodeId && e.seq > waiting.seq
+        )
       : false
 
     ask(!answered && waiting?.type === 'HumanWaiting' ? waiting.payload : null)
@@ -327,24 +329,27 @@ export function usePlayer(planOf: () => RunPlan): Player {
     void resumeRun(liveRun.current).catch(() => {})
   }, [])
 
-  const seek = useCallback((h: number) => {
-    const total = eventsRef.current.length
-    const clamped = Math.max(0, Math.min(h, total))
+  const seek = useCallback(
+    (h: number) => {
+      const total = eventsRef.current.length
+      const clamped = Math.max(0, Math.min(h, total))
 
-    if (clamped >= total) {
-      headRef.current = total
-      setHead(null)
+      if (clamped >= total) {
+        headRef.current = total
+        setHead(null)
 
-      return
-    }
+        return
+      }
 
-    if (liveRun.current && pauseRef.current === 'none') {
-      requestPause()
-    }
+      if (liveRun.current && pauseRef.current === 'none') {
+        requestPause()
+      }
 
-    headRef.current = clamped
-    setHead(clamped)
-  }, [requestPause])
+      headRef.current = clamped
+      setHead(clamped)
+    },
+    [requestPause]
+  )
 
   const goLive = useCallback(() => {
     setHead(null)

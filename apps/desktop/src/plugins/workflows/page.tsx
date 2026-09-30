@@ -156,7 +156,7 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
   // component and throw the result away — React only keeps the first. The
   // document is fixed for this canvas's life (the page keys on its id), so
   // there's nothing for the memo to depend on.
-   
+
   const seed = useMemo(() => {
     const g = fromScenario(doc.scenario)
 
@@ -401,14 +401,14 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
 
   return (
     <RunNowProvider value={{ start: player.start, fireWebhook: player.fireWebhook, running: player.running }}>
-    <PageShell className="wf-root" style={{ '--wf-inspector': selNode ? INSPECTOR_REM : '0rem' } as CSSProperties}>
-      {/* Same header as the Kanban board: the page name here, the current
+      <PageShell className="wf-root" style={{ '--wf-inspector': selNode ? INSPECTOR_REM : '0rem' } as CSSProperties}>
+        {/* Same header as the Kanban board: the page name here, the current
           workflow in the titlebar (see WorkflowSwitcher). Theme and mode are
           the host's — they live in Settings, not on this page. */}
-      <PageHeader>
-        <PageHeaderTitle>Workflows</PageHeaderTitle>
-        <PageHeaderActions>
-          {/* A divided box, not an arrow: the icon has to say "arrangement",
+        <PageHeader>
+          <PageHeaderTitle>Workflows</PageHeaderTitle>
+          <PageHeaderActions>
+            {/* A divided box, not an arrow: the icon has to say "arrangement",
               and a lone chevron on a header button says "this opens something".
               It shows the layout you'd GET.
               
@@ -417,66 +417,66 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
               between two different-length strings resized and re-centred its
               bubble on every press — a flicker right under the header, for a
               state the icon is already showing. */}
-          <Tip label="Flip layout direction">
-            <Button
-              aria-label="Flip layout direction"
-              onClick={() => setDir(vertical ? 'LR' : 'TB')}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon
-                className="grid size-3.5 place-items-center"
-                name={vertical ? 'split-vertical' : 'split-horizontal'}
-                size="0.85rem"
-              />
-            </Button>
-          </Tip>
-        </PageHeaderActions>
-      </PageHeader>
+            <Tip label="Flip layout direction">
+              <Button
+                aria-label="Flip layout direction"
+                onClick={() => setDir(vertical ? 'LR' : 'TB')}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon
+                  className="grid size-3.5 place-items-center"
+                  name={vertical ? 'split-vertical' : 'split-horizontal'}
+                  size="0.85rem"
+                />
+              </Button>
+            </Tip>
+          </PageHeaderActions>
+        </PageHeader>
 
-      <div
-        className={cn('canvas-wrap', reflowing && 'reflowing')}
-        /* Double-click empty canvas frames the graph. Caught here because
+        <div
+          className={cn('canvas-wrap', reflowing && 'reflowing')}
+          /* Double-click empty canvas frames the graph. Caught here because
            React Flow exposes no pane double-click prop — the target check
            keeps double-clicks on cards, wires and panels meaning whatever
            those things say they mean. */
-        onDoubleClick={e => {
-          if ((e.target as HTMLElement).classList.contains('react-flow__pane')) {
-            resetView()
-          }
-        }}
-        ref={canvasWrap}
-      >
-        <NodeLive.Provider value={nodes}>
-        <FlowDirProvider value={dir}>
-          <AddStepProvider value={requestAdd}>
-            <CutEdgeProvider value={cutEdge}>
-              <ReactFlow
-                colorMode={resolvedMode}
-                /* n8n's `connection-radius`, triple React Flow's default 20. A 9px
+          onDoubleClick={e => {
+            if ((e.target as HTMLElement).classList.contains('react-flow__pane')) {
+              resetView()
+            }
+          }}
+          ref={canvasWrap}
+        >
+          <NodeLive.Provider value={nodes}>
+            <FlowDirProvider value={dir}>
+              <AddStepProvider value={requestAdd}>
+                <CutEdgeProvider value={cutEdge}>
+                  <ReactFlow
+                    colorMode={resolvedMode}
+                    /* n8n's `connection-radius`, triple React Flow's default 20. A 9px
            socket you have to hit dead-on is why dropping a wire felt like
            threading a needle; at 60 the socket comes to meet you, and the
            connectingto highlight tells you it has. */
-                connectionRadius={60}
-                deleteKeyCode={['Backspace', 'Delete']}
-                edges={edges}
-                edgeTypes={edgeTypes}
-                elevateNodesOnSelect
-                fitView={nodes.some(n => n.id !== CANVAS_NOTE_ID)}
-                fitViewOptions={FIT}
-                isValidConnection={isValidConnection}
-                maxZoom={1.75}
-                minZoom={0.35}
-                multiSelectionKeyCode={['Meta', 'Control']}
-                /* React Flow defaults nodeClickDistance to 0, which forwards to d3's
+                    connectionRadius={60}
+                    deleteKeyCode={['Backspace', 'Delete']}
+                    edges={edges}
+                    edgeTypes={edgeTypes}
+                    elevateNodesOnSelect
+                    fitView={nodes.some(n => n.id !== CANVAS_NOTE_ID)}
+                    fitViewOptions={FIT}
+                    isValidConnection={isValidConnection}
+                    maxZoom={1.75}
+                    minZoom={0.35}
+                    multiSelectionKeyCode={['Meta', 'Control']}
+                    /* React Flow defaults nodeClickDistance to 0, which forwards to d3's
            .clickDistance(0): the click is swallowed if the pointer moves even
            one pixel between press and release. A trackpad almost always drifts
            a pixel or two, so selecting a node silently failed and you'd click
            again — the "dead zone". A few pixels of slack is what every native
            control allows. paneClickDistance gets the same treatment so
            deselecting doesn't have the identical problem. */
-                nodeClickDistance={4}
-                /* A node's y is its CENTRE, not its top edge. React Flow renders at
+                    nodeClickDistance={4}
+                    /* A node's y is its CENTRE, not its top edge. React Flow renders at
            `position.y - height * origin[1]`, so a card that grows takes half
            the new height off its top and half off its bottom instead of
            unrolling downward from a pinned corner.
@@ -491,139 +491,139 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
            transform on the card: origin feeds `positionAbsolute`, so bounds,
            fitView, hit-testing and edge geometry all agree. A CSS transform
            would move the paint and leave React Flow's model behind it. */
-                nodeOrigin={[0, 0.5]}
-                nodes={nodes}
-                nodesDraggable
-                nodeTypes={nodeTypes}
-                onBeforeDelete={onBeforeDelete}
-                onConnect={onConnect}
-                onConnectEnd={onConnectEnd}
-                onConnectStart={onConnectStart}
-                onEdgesChange={handleEdgesChange}
-                onNodeClick={(e, n) => {
-                  if (n.id === CANVAS_NOTE_ID) {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey) {
-                      requestAdd({
-                        on: 'canvas',
-                        at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
-                      })
-                    }
+                    nodeOrigin={[0, 0.5]}
+                    nodes={nodes}
+                    nodesDraggable
+                    nodeTypes={nodeTypes}
+                    onBeforeDelete={onBeforeDelete}
+                    onConnect={onConnect}
+                    onConnectEnd={onConnectEnd}
+                    onConnectStart={onConnectStart}
+                    onEdgesChange={handleEdgesChange}
+                    onNodeClick={(e, n) => {
+                      if (n.id === CANVAS_NOTE_ID) {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey) {
+                          requestAdd({
+                            on: 'canvas',
+                            at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
+                          })
+                        }
 
-                    return
-                  }
+                        return
+                      }
 
-                  setSelected(n.id)
-                }}
-                onNodeDragStart={() => takeSnapshot()}
-                onNodesChange={handleNodesChange}
-                onPaneClick={e => {
-                  if (ignorePaneClick.current) {
-                    ignorePaneClick.current = false
+                      setSelected(n.id)
+                    }}
+                    onNodeDragStart={() => takeSnapshot()}
+                    onNodesChange={handleNodesChange}
+                    onPaneClick={e => {
+                      if (ignorePaneClick.current) {
+                        ignorePaneClick.current = false
 
-                    return
-                  }
+                        return
+                      }
 
-                  if (e.metaKey || e.ctrlKey || e.shiftKey) {
-                    requestAdd({
-                      on: 'canvas',
-                      at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
-                    })
+                      if (e.metaKey || e.ctrlKey || e.shiftKey) {
+                        requestAdd({
+                          on: 'canvas',
+                          at: screenToFlowPosition({ x: e.clientX, y: e.clientY })
+                        })
 
-                    return
-                  }
+                        return
+                      }
 
-                  if (draft) {
-                    setDraft(null)
+                      if (draft) {
+                        setDraft(null)
 
-                    return
-                  }
+                        return
+                      }
 
-                  setSelected(null)
-                }}
-                onReconnect={onReconnect}
-                onReconnectEnd={onReconnectEnd}
-                onReconnectStart={onReconnectStart}
-                onSelectionDragStart={() => takeSnapshot()}
-                panActivationKeyCode={null}
-                paneClickDistance={4}
-                proOptions={{ hideAttribution: true }}
-                /* Default 10px puts the grab ring almost entirely under the node's own
+                      setSelected(null)
+                    }}
+                    onReconnect={onReconnect}
+                    onReconnectEnd={onReconnectEnd}
+                    onReconnectStart={onReconnectStart}
+                    onSelectionDragStart={() => takeSnapshot()}
+                    panActivationKeyCode={null}
+                    paneClickDistance={4}
+                    proOptions={{ hideAttribution: true }}
+                    /* Default 10px puts the grab ring almost entirely under the node's own
            handle, so the gesture that unplugs a wire was reachable only in a
            couple of pixels of fringe. Matched to the edge's hit stroke. */
-                reconnectRadius={22}
-                selectionKeyCode="Shift"
-                zoomActivationKeyCode={['Meta', 'Control']}
-                /* The wrapper's onDoubleClick frames the graph. RF's default
+                    reconnectRadius={22}
+                    selectionKeyCode="Shift"
+                    zoomActivationKeyCode={['Meta', 'Control']}
+                    /* The wrapper's onDoubleClick frames the graph. RF's default
            spend of the gesture (zoom in) is turned off to make room. */
-                zoomOnDoubleClick={false}
-              >
-                <Background gap={20} size={1.3} variant={BackgroundVariant.Dots} />
+                    zoomOnDoubleClick={false}
+                  >
+                    <Background gap={20} size={1.3} variant={BackgroundVariant.Dots} />
 
-                <LiveLog lines={lines} titles={nodeTitles} />
+                    <LiveLog lines={lines} titles={nodeTitles} />
 
-                {/* The app's composer dock, borrowed whole: a card fused to the top of
+                    {/* The app's composer dock, borrowed whole: a card fused to the top of
             the capsule (the chat's status stack is the same shape) carrying the
             transport, and the composer itself below it. Same fill, same glass,
             same seam — this reads as the app's input, because it is. */}
-                <Panel className="run-panel" position="bottom-center">
-                  {player.asking && player.deferred && (
-                    <button className="ask-back" onClick={player.reveal}>
-                      <Codicon name="bell" />
-                      {askTitle} is waiting on you
-                    </button>
-                  )}
-                  <div
-                    className={cn(
-                      composerDockCard('top'),
-                      'canvas-dock-transport mx-2 overflow-visible rounded-b-none border-b-transparent'
+                    <Panel className="run-panel" position="bottom-center">
+                      {player.asking && player.deferred && (
+                        <button className="ask-back" onClick={player.reveal}>
+                          <Codicon name="bell" />
+                          {askTitle} is waiting on you
+                        </button>
+                      )}
+                      <div
+                        className={cn(
+                          composerDockCard('top'),
+                          'canvas-dock-transport mx-2 overflow-visible rounded-b-none border-b-transparent'
+                        )}
+                      >
+                        <Timeline p={player} />
+                      </div>
+                      <CanvasChat autofocus={!nodes.some(n => n.id !== CANVAS_NOTE_ID)} workflowId={doc.id} />
+                    </Panel>
+
+                    {player.asking && (
+                      <AskDialog
+                        {...player.asking}
+                        onDefer={player.defer}
+                        onRespond={player.respond}
+                        open={!player.deferred}
+                        title={askTitle}
+                      />
                     )}
-                  >
-                    <Timeline p={player} />
-                  </div>
-                  <CanvasChat autofocus={!nodes.some(n => n.id !== CANVAS_NOTE_ID)} workflowId={doc.id} />
-                </Panel>
+                  </ReactFlow>
+                </CutEdgeProvider>
+              </AddStepProvider>
+            </FlowDirProvider>
+          </NodeLive.Provider>
+        </div>
 
-                {player.asking && (
-                  <AskDialog
-                    {...player.asking}
-                    onDefer={player.defer}
-                    onRespond={player.respond}
-                    open={!player.deferred}
-                    title={askTitle}
-                  />
-                )}
-              </ReactFlow>
-            </CutEdgeProvider>
-          </AddStepProvider>
-        </FlowDirProvider>
-        </NodeLive.Provider>
-      </div>
-
-      {/* Last child of the page root, exactly where the Kanban board hangs its
+        {/* Last child of the page root, exactly where the Kanban board hangs its
           task drawer — so it pins to the whole page and bleeds past the header,
           rather than starting below it as another inset canvas panel.
 
           Narrower than that drawer's 26rem: it holds prose and a run log, this
           holds a column of knobs. */}
-      {selNode && (
-        <SidePanel className={INSPECTOR_WIDTH} onClose={() => setSelected(null)}>
-          <Inspector
-            graph={graph}
-            node={selNode}
-            onChange={patch => updateConfig(selNode.id, patch)}
-            onClose={() => setSelected(null)}
-            onDelete={() => {
-              setSelected(null)
-              removeNode(selNode.id)
-            }}
-            onOp={applyOp}
-            rt={runtime[selNode.id]}
-          />
-        </SidePanel>
-      )}
+        {selNode && (
+          <SidePanel className={INSPECTOR_WIDTH} onClose={() => setSelected(null)}>
+            <Inspector
+              graph={graph}
+              node={selNode}
+              onChange={patch => updateConfig(selNode.id, patch)}
+              onClose={() => setSelected(null)}
+              onDelete={() => {
+                setSelected(null)
+                removeNode(selNode.id)
+              }}
+              onOp={applyOp}
+              rt={runtime[selNode.id]}
+            />
+          </SidePanel>
+        )}
 
-      {draft && <KindPicker at={draft.at} onClose={() => setDraft(null)} onPick={confirmAdd} />}
-    </PageShell>
+        {draft && <KindPicker at={draft.at} onClose={() => setDraft(null)} onPick={confirmAdd} />}
+      </PageShell>
     </RunNowProvider>
   )
 }

@@ -99,7 +99,12 @@ export function ensureCanvasSession(workflowId: string): Promise<string> {
   }
 
   const work = (async () => {
-    const taken = new Set($workflows.get().map(d => d.sessionId).filter((id): id is string => !!id))
+    const taken = new Set(
+      $workflows
+        .get()
+        .map(d => d.sessionId)
+        .filter((id): id is string => !!id)
+    )
     const legacy = store?.get(LEGACY_KEY, '') ?? ''
 
     // One-time: the old single canvas chat lands on the first workflow that

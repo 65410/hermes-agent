@@ -44,8 +44,8 @@ import {
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
-import { onPluginServerRequest } from '@/contrib/server-request-tap'
 import { registry } from '@/contrib/registry'
+import { onPluginServerRequest } from '@/contrib/server-request-tap'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
@@ -1686,24 +1686,6 @@ export {
   type ComposerModelPillContext,
   type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
-/** THE session status dot — the one primitive the sidebar row, the pane tabs
- *  and the session switcher render, so a session's status can never disagree
- *  between surfaces. Pass the STORED session id and it resolves the rest
- *  itself: the live state (needs-input / working / stalled / background /
- *  unread / draft / idle) and the project color. Never hand-roll a status
- *  circle beside it — a plugin's own dot inverts core's color vocabulary the
- *  moment either side moves. */
-export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
-/** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
- *  Reserve it and your label starts on the same left edge as every session row
- *  above you; spell the classes yourself and the row drifts. The session row is
- *  canonical; `row-geometry.ts` explains what each measurement belongs to. */
-export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
-/** One glyph per gateway kind — device, cloud, terminal, network. The statusbar
- *  switcher, the fleet profile rail and any plugin rail listing gateways share
- *  it, so a connection looks the same wherever it is named. */
-export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
-export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 /** The composer control row's button vocabulary — a ghost icon for the
  *  secondary controls, a solid circle for the one primary action. Wear these on
  *  any control that rides the composer so a plugin's row reads as the same row. */
@@ -1723,6 +1705,24 @@ export {
   DetachedSessionChat as SessionChat,
   type DetachedSessionChatProps as SessionChatProps
 } from '@/app/chat/detached-chat'
+/** THE session status dot — the one primitive the sidebar row, the pane tabs
+ *  and the session switcher render, so a session's status can never disagree
+ *  between surfaces. Pass the STORED session id and it resolves the rest
+ *  itself: the live state (needs-input / working / stalled / background /
+ *  unread / draft / idle) and the project color. Never hand-roll a status
+ *  circle beside it — a plugin's own dot inverts core's color vocabulary the
+ *  moment either side moves. */
+export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
+/** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
+ *  Reserve it and your label starts on the same left edge as every session row
+ *  above you; spell the classes yourself and the row drifts. The session row is
+ *  canonical; `row-geometry.ts` explains what each measurement belongs to. */
+export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
+/** One glyph per gateway kind — device, cloud, terminal, network. The statusbar
+ *  switcher, the fleet profile rail and any plugin rail listing gateways share
+ *  it, so a connection looks the same wherever it is named. */
+export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
+export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 /** Page-owned header control (the kanban board switcher): projected into the
  *  workspace page header when the page renders in the workspace pane, and
@@ -1806,9 +1806,6 @@ export type { TitlebarTool } from '@/app/shell/titlebar-controls'
  * `MEDIA:` delivery directives) and the same rich Markdown/media components as
  * core chat. Prefer this over raw Streamdown for transcript-style messages. */
 export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
-/** The oversized Collapse lettering an empty chat is titled with — core writes
- *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
-export { Wordmark } from '@/components/chat/wordmark'
 /** The composer's own chrome, so a plugin surface that carries an input can
  *  wear the real one instead of approximating it. `composerDockCard('top')` is
  *  the card that fuses above the composer (the status stack uses it). */
@@ -1820,6 +1817,9 @@ export {
   composerPanelCard,
   composerSurfaceGlass
 } from '@/components/chat/composer-dock'
+/** The oversized Collapse lettering an empty chat is titled with — core writes
+ *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
+export { Wordmark } from '@/components/chat/wordmark'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above
  *  it — it takes no width from any zone, has no tab, and can't be docked.

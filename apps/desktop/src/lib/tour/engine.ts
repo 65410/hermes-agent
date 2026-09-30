@@ -138,9 +138,7 @@ export function runTourEngine(
     step.title || step.text
       ? {
           description: step.text || '',
-          popoverClass:
-            (first ? 'tour-pop-in' : 'tour-pop-next') +
-            (step.accent ? ' tour-pop-accent' : ''),
+          popoverClass: (first ? 'tour-pop-in' : 'tour-pop-next') + (step.accent ? ' tour-pop-accent' : ''),
           ...(solo ? { showButtons: ['close'] } : {}),
           side: step.side || undefined,
           title: step.title || ''

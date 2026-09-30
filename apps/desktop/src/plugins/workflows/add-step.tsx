@@ -185,18 +185,9 @@ export function KindPicker({
   return (
     <DropdownMenu onOpenChange={open => !open && onClose()} open>
       <DropdownMenuTrigger asChild>
-        <span
-          aria-hidden
-          className="pointer-events-none fixed z-50 size-px"
-          style={{ left, top }}
-        />
+        <span aria-hidden className="pointer-events-none fixed z-50 size-px" style={{ left, top }} />
       </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        className="min-w-44"
-        onCloseAutoFocus={e => e.preventDefault()}
-        side="bottom"
-      >
+      <DropdownMenuContent align="start" className="min-w-44" onCloseAutoFocus={e => e.preventDefault()} side="bottom">
         {STEP_KINDS.map(k => (
           <DropdownMenuItem key={k.kind} onSelect={() => onPick(k.kind)}>
             <Codicon name={KIND_ICON[k.kind]} size="0.8rem" />

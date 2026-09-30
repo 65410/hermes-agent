@@ -4,7 +4,18 @@
 import type { Edge, Node, XYPosition } from '@xyflow/react'
 
 import { freeArmId, guessWhen } from './graph-arms'
-import { dataOf, edgeIdFor, fail, type Graph, isLoop, mintId, newEdge, type OpResult, resolveStep, stepById } from './graph-core'
+import {
+  dataOf,
+  edgeIdFor,
+  fail,
+  type Graph,
+  isLoop,
+  mintId,
+  newEdge,
+  type OpResult,
+  resolveStep,
+  stepById
+} from './graph-core'
 import { armWires } from './graph-wiring'
 import { DEFAULT_DIR, type FlowDir, freeRow, freeSpot, heightOf, RANK_GAP, widthOf } from './layout'
 import type { NodeData } from './nodes'

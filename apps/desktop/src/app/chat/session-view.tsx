@@ -166,7 +166,10 @@ export function buildSessionView(
     $messagesEmpty: computed($viewMessages, messages => messages.length === 0),
     $model: computed($state, state => state?.model ?? ''),
     $provider: computed($state, state => state?.provider ?? ''),
+    // No slice yet means the surface's resume is still in flight.
     $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
+    $reasoningEffortPending: computed($state, state => (state ? reasoningEffortPending(state) : true)),
+    $reasoningEffortWire: computed($state, state => state?.reasoningEffortWire ?? ''),
     $runtimeId,
     // Constant for the surface's lifetime — a plain atom, not a computed.
     $storedId: atom(storedSessionId),

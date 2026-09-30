@@ -163,10 +163,7 @@ function BoardNameField({
   const k = useKanban()
 
   return (
-    <Field
-      label={k.name}
-      status={value.trim() && !slug ? { level: 'error', message: k.boardNameUnusable } : undefined}
-    >
+    <Field label={k.name} status={value.trim() && !slug ? { level: 'error', message: k.boardNameUnusable } : undefined}>
       <Input
         autoFocus
         onChange={event => onChange(event.target.value)}
