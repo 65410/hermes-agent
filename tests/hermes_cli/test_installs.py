@@ -375,6 +375,19 @@ class TestCli:
         assert ids[installs.install_id(running)]["removable"] is False
         assert isinstance(data["launchers"], list)
 
+    def test_list_json_reports_the_notice_state(self, home, running, capsys):
+        def notice():
+            installs.run_cli(self._args(json=True), run=_quiet)
+            return json.loads(capsys.readouterr().out)["notice"]
+
+        assert notice() == {"count": 0, "dismissed": False}
+
+        _checkout(home / "hermes-agent")
+        assert notice() == {"count": 1, "dismissed": False}
+
+        installs.dismiss()
+        assert notice() == {"count": 1, "dismissed": True}
+
     def test_dry_run_changes_nothing(self, home, running, capsys):
         managed = _checkout(home / "hermes-agent")
 
