@@ -7,6 +7,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
+import { CatalogSwitch } from '../catalog/catalog-switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
@@ -37,7 +38,7 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
-import { $connection } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
@@ -564,14 +565,17 @@ export const PluginsTab = memo(function PluginsTab({
   const agentRows = useStore($agentPlugins)
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
+  const gatewayState = useStore($gatewayState)
   const busyKey = useStore($agentPluginBusy)
 
   const scope = profileParam(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
-    void loadAgentPlugins(requestGateway, scope)
-  }, [requestGateway, scope])
+    if (gatewayState === 'open') {
+      void loadAgentPlugins(requestGateway, scope)
+    }
+  }, [requestGateway, scope, gatewayState])
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -713,7 +717,7 @@ export const PluginsTab = memo(function PluginsTab({
     }
 
     return (
-      <Switch
+      <CatalogSwitch
         aria-label={pkg.name}
         checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
         disabled={agent ? !agent.key || agentBusy(agent) : false}
@@ -727,7 +731,7 @@ export const PluginsTab = memo(function PluginsTab({
     status === 'error' ? (
       <CatalogAlert
         onRetry={() => void loadAgentPlugins(requestGateway, scope)}
-        retryLabel={t.skills.refresh}
+        retryLabel={t.catalog.retry}
         title={p.loadFailed}
       >
         {error}

@@ -1,4 +1,5 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
+import { officialCatalogArtwork } from './catalog-artwork'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { queryClient } from '@/lib/query-client'
@@ -139,7 +140,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       docsUrl:
         webUrl(row.docsUrl) ||
         (text(row.docsPath) ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
-      imageUrl: kind === 'plugins' ? catalogImageUrl(row.image) : null,
+      imageUrl: catalogImageUrl(row.image) ?? officialCatalogArtwork(kind, row),
       screenshots:
         kind === 'plugins'
           ? strings(row.screenshots)

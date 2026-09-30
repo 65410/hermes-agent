@@ -5,6 +5,7 @@ import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { Switch } from '@/components/ui/switch'
+import { CatalogSwitch } from '../catalog/catalog-switch'
 import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
@@ -258,7 +259,7 @@ function ScopedSkillsTab({
         profile={profile}
         query={query}
         renderInstalledAction={skill => (
-          <Switch
+          <CatalogSwitch
             aria-label={skill.name}
             checked={skill.enabled}
             disabled={controlsDisabled}

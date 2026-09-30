@@ -173,6 +173,7 @@ export function CapabilitiesView({
     <PageSearchShell
       {...props}
       activeTab={mode}
+      tabsAlign="start"
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
       // Catalogs keep search beside their results; Connectors owns its field too.

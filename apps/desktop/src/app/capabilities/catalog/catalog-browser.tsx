@@ -1,13 +1,13 @@
-import { compactNumber, groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
+import { CatalogDiscovery } from './catalog-discovery'
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
 import { Masonry } from '@/components/ui/masonry'
-import { Reel } from '@/components/ui/reel'
 import { SearchField } from '@/components/ui/search-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
@@ -18,11 +18,11 @@ import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
 import { PanelEmpty } from '../../overlays/panel'
 
 import { CatalogAlert } from './catalog-alert'
-import { CatalogCard } from './catalog-card'
+import { CatalogCard, type CatalogCardVariant } from './catalog-card'
 import { type CatalogEntry, type CatalogKind, useCatalog } from './catalog-data'
 import { CatalogDetail } from './catalog-detail'
 import { CatalogDetailDialog } from './catalog-detail-dialog'
-import { CatalogFilters } from './catalog-filters'
+import { CatalogFilterBar } from './catalog-filter-bar'
 import { CatalogInstallSwitch } from './catalog-install-switch'
 import { CatalogListRow } from './catalog-list-row'
 import { CATALOG_POINTER_ENABLED, trackCatalogPointer } from './catalog-pointer'
@@ -63,9 +63,6 @@ interface CatalogBrowserProps {
 const PAGE_SIZE = 60
 // The skills hub carries ~10k distinct tags; the rail is for browsing, search covers the tail.
 const TAG_LIMIT = 16
-// Discovery shelves preview a category; "See all" opens the full list. Every
-// rendered card is restyled whenever a modal locks the page.
-const SHELF_SIZE = 6
 /** On: masonry lanes. Off: fallback grid whose rows share one height (`.catalog-grid`). */
 const CATALOG_MASONRY = true
 
@@ -171,15 +168,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
   const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled), sort, kind)
 
-  const discover =
-    kind === 'plugins' && !facets.categories.length && !facets.tags.length && !deferredQuery && !facets.installedOnly
-
-  const sections =
-    discover && cardView
-      ? groupCatalogPlugins(filtered).map(([key, items]) => ({ key, ...PLUGIN_CATEGORIES[key], entries: items }))
-      : []
-
-  const pageOrder = sections.length ? sections.flatMap(section => section.entries) : filtered
+  const discover = !facets.sources.length && !facets.categories.length && !facets.tags.length && !deferredQuery && !facets.installedOnly
+  const pageOrder = filtered
 
   const selected = visible.find(entry => entry.id === selectedId) ?? filtered[0]
   const related = selected && (!cardView || detailOpen) ? relatedEntries(filtered, selected, 3) : []
@@ -226,8 +216,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     )
   }
 
-  const card = (entry: CatalogEntry, accentIndex: number) => (
+  const card = (entry: CatalogEntry, accentIndex: number, variant: CatalogCardVariant = 'default') => (
     <CatalogCard
+      variant={variant}
       accentIndex={accentIndex}
       action={entryAction(entry)}
       entry={entry}
@@ -282,36 +273,21 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   return (
     <div className="@container/catalog flex h-full min-h-0 min-w-0" data-catalog={kind} ref={root}>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col @[48rem]/catalog:flex-row">
-        <CatalogFilters
-          categories={catalogCategories(visible, kind)}
-          className="max-h-52 shrink-0 gap-0 pt-3 @[48rem]/catalog:max-h-none @[48rem]/catalog:w-48"
-          facets={facets}
-          onCategory={filters.toggleCategory}
-          onClear={clearFilters}
-          onInstalled={filters.toggleInstalled}
-          onSource={filters.toggleSource}
-          onTag={filters.toggleTag}
-          resultCount={filtered.length}
-          sidebarActions={actions && <div className="flex flex-wrap items-center gap-1.5">{actions}</div>}
-          sortControl={sortControl}
-          sources={catalogSources(visible)}
-          tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
-        />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-catalog-results>
           {/* Search owns the header; kind-specific setup actions and the view toggle share the end slot. */}
           <header
-            className="grid shrink-0 grid-cols-1 items-center gap-2 px-3 pb-1 pt-3 @[48rem]/catalog:grid-cols-[minmax(0,1fr)_auto] @[48rem]/catalog:gap-4"
+            className="catalog-search-header shrink-0"
             data-catalog-header
           >
             <SearchField
-              containerClassName="w-full min-w-0"
+              containerClassName="w-full min-w-0 rounded-2xl bg-(--dt-card)"
+              leadingContent={<Badge variant="muted" size="xs">{kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills}</Badge>}
               onChange={value => onQueryChange?.(value)}
               placeholder={kind === 'plugins' ? c.searchPlugins : c.searchSkills}
               value={query ?? ''}
               variant="box"
-            />
-            <div
+              trailingAction={<div
               className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end"
               data-catalog-actions
             >
@@ -329,8 +305,23 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                   <Codicon name={cardView ? 'list-unordered' : 'extensions'} />
                 </Button>
               </Tip>
-            </div>
+            </div>}
+            />
           </header>
+          <CatalogFilterBar
+            categories={catalogCategories(visible, kind)}
+            sources={catalogSources(visible)}
+            tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
+            facets={facets}
+            onCategory={filters.toggleCategory}
+            onSource={filters.toggleSource}
+            onTag={filters.toggleTag}
+            onInstalled={filters.toggleInstalled}
+            onClear={clearFilters}
+            resultCount={filtered.length}
+            sortControl={sortControl}
+            actions={actions}
+          />
           {notice}
           {error && entries.length > 0 && (
             <CatalogAlert onRetry={() => void refetch()} retryLabel={c.retry} title={c.loadFailed}>
@@ -361,51 +352,21 @@ export const CatalogBrowser = memo(function CatalogBrowser({
               />
             ) : cardView ? (
               <>
-                <div className="flex h-full min-h-0 flex-col px-3 pb-3" data-catalog-cards={kind}>
+                <div className="flex h-full min-h-0 flex-col" data-catalog-cards={kind}>
                   <div
                     className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
                     data-catalog-scroll
                     key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
                   >
                     {discover ? (
-                      <div className="space-y-7 py-3">
-                        {sections.map((section, sectionIndex) => (
-                          <section className="space-y-3" data-catalog-section={section.key} key={section.key}>
-                            <header className="flex items-center justify-between gap-3">
-                              <h3 className="flex items-baseline gap-2 text-sm font-semibold">
-                                <Button
-                                  className="text-sm font-semibold text-(--ui-text-primary)"
-                                  onClick={() => filters.chooseCategory(section.key)}
-                                  size="inline"
-                                  variant="text"
-                                >
-                                  {section.label}
-                                </Button>
-                                <span className="text-xs font-normal text-(--ui-text-tertiary)">
-                                  {compactNumber(section.entries.length)}
-                                </span>
-                              </h3>
-                              <Button onClick={() => filters.chooseCategory(section.key)} size="inline" variant="text">
-                                {c.seeAll}
-                                <Codicon name="arrow-right" />
-                              </Button>
-                            </header>
-                            <p className="text-xs text-(--ui-text-tertiary)">{section.blurb}</p>
-                            <Reel className="*:w-68" data-catalog-hover-group>
-                              {section.entries
-                                .slice(0, SHELF_SIZE)
-                                .map((entry, index) => card(entry, sectionIndex * SHELF_SIZE + index))}
-                            </Reel>
-                          </section>
-                        ))}
-                      </div>
+                      <CatalogDiscovery entries={filtered} kind={kind} card={card} onCategory={filters.chooseCategory} actions={actions} />
                     ) : (
-                      <div className="py-2">
+                      <div className="catalog-filtered-results py-2">
                         {CATALOG_MASONRY ? (
-                          <Masonry data-catalog-hover-group>{filtered.slice(0, limit).map(card)}</Masonry>
+                          <Masonry data-catalog-hover-group>{filtered.slice(0, limit).map((entry, index) => card(entry, index))}</Masonry>
                         ) : (
                           <div className="catalog-grid" data-catalog-hover-group>
-                            {filtered.slice(0, limit).map(card)}
+                            {filtered.slice(0, limit).map((entry, index) => card(entry, index))}
                           </div>
                         )}
                         {filtered.length > limit && (
