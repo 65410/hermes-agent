@@ -1,7 +1,16 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $salvagedEditNotice, clearComposerTerminalSelections, setComposerTerminalSelection, undoSalvagedEdit } from '@/store/composer'
+import {
+  $salvagedEditNotice,
+  $salvagedEditNoticesBySession,
+  announceSalvagedEdit,
+  clearComposerTerminalSelections,
+  dismissSalvagedEdit,
+  getSalvagedEditNotice,
+  setComposerTerminalSelection,
+  undoSalvagedEdit
+} from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -39,6 +48,7 @@ function renderQueueHook(
   const onSteer = overrides.onSteer
   const queueEditRef: { current: QueueEditState | null } = { current: null }
   const draftRef = { current: overrides.draft ?? '' }
+  const draftRefHook: { current: string } = { current: '' }
 
   const hook = renderHook(
     ({ busy }: { busy: boolean }) =>
@@ -59,6 +69,7 @@ function renderQueueHook(
         onSubmit,
         queueEditRef,
         queueSessionKey: SESSION_KEY,
+        readLiveText: () => draftRefHook.current,
         sessionId: 'rt-session-queue-hook'
       }),
     { initialProps: { busy: overrides.busy ?? false } }
@@ -75,8 +86,7 @@ describe('useComposerQueue park integration', () => {
     resetFrozenQueuedTransportsForTests()
     clearNotifications()
     clearComposerTerminalSelections()
-    clearNotifications()
-    resetFrozenQueuedTransportsForTests()
+    $salvagedEditNoticesBySession.set({})
     setSessionsLoading(false)
   })
 
@@ -88,8 +98,7 @@ describe('useComposerQueue park integration', () => {
     resetFrozenQueuedTransportsForTests()
     clearNotifications()
     clearComposerTerminalSelections()
-    clearNotifications()
-    resetFrozenQueuedTransportsForTests()
+    $salvagedEditNoticesBySession.set({})
     setSessionsLoading(true)
   })
 
@@ -472,6 +481,7 @@ describe('useComposerQueue park integration', () => {
           onSubmit,
           queueEditRef,
           queueSessionKey: SESSION_KEY,
+          readLiveText: () => draftRef.current,
           sessionId: 'rt-session-queue-hook'
         }),
       { initialProps: { busy: true } }
@@ -536,6 +546,7 @@ describe('useComposerQueue park integration', () => {
           onSubmit,
           queueEditRef,
           queueSessionKey: SESSION_KEY,
+          readLiveText: () => draftRef.current,
           sessionId: 'rt-session-queue-hook'
         }),
       { initialProps: { busy: true } }
@@ -567,8 +578,7 @@ describe('useComposerQueue park integration', () => {
     // The edit exited (its entry is gone) but the typed text is recoverable:
     // it stays in the editor AND the notice names it for an explicit put-back.
     expect(queueEditRef.current).toBeNull()
-    const notice = $salvagedEditNotice.get()
-    expect(notice?.sessionKey).toBe(SESSION_KEY)
+    const notice = getSalvagedEditNotice(SESSION_KEY)
     expect(notice?.currentText).toBe('replacement text typed over a minute')
     expect(notice?.undoText).toBe('replacement text typed over a minute')
   })
@@ -597,6 +607,7 @@ describe('useComposerQueue park integration', () => {
           onSubmit: vi.fn(async () => true),
           queueEditRef,
           queueSessionKey: SESSION_KEY,
+          readLiveText: () => draftRef.current,
           sessionId: 'rt-session-queue-hook'
         })
     )
@@ -613,15 +624,14 @@ describe('useComposerQueue park integration', () => {
     // Designed cancel semantics: the pre-edit draft is repainted…
     expect(loadIntoComposer).toHaveBeenLastCalledWith('', [])
     // …and the dirty buffer is kept recoverable behind the salvage notice.
-    const notice = $salvagedEditNotice.get()
-    expect(notice?.sessionKey).toBe(SESSION_KEY)
+    const notice = getSalvagedEditNotice(SESSION_KEY)
     expect(notice?.currentText).toBe('')
     expect(notice?.undoText).toBe('replacement text typed over a minute')
 
     // Undo while the composer still shows the repainted draft puts the typed
     // text back; after the user typed something new it only dismisses.
-    expect(undoSalvagedEdit('')).toBe('replacement text typed over a minute')
-    expect($salvagedEditNotice.get()).toBeNull()
+    expect(undoSalvagedEdit(SESSION_KEY, '')).toBe('replacement text typed over a minute')
+    expect(getSalvagedEditNotice(SESSION_KEY)).toBeNull()
   })
 
   it('re-bases the dirty check on the entry reached by ArrowUp/ArrowDown (#88621)', () => {
@@ -650,6 +660,7 @@ describe('useComposerQueue park integration', () => {
         onSubmit: vi.fn(async () => true),
         queueEditRef,
         queueSessionKey: SESSION_KEY,
+        readLiveText: () => draftRef.current,
         sessionId: 'rt-session-queue-hook'
       })
     )
@@ -667,6 +678,87 @@ describe('useComposerQueue park integration', () => {
       hook.result.current.exitQueuedEdit('cancel')
     })
 
-    expect($salvagedEditNotice.get()).toBeNull()
+    expect(getSalvagedEditNotice(SESSION_KEY)).toBeNull()
+  })
+
+  it('reads the live editor before the vanished-entry dirty check (#88621)', async () => {
+    // Input flushes the DOM into draftRef on a rAF; if the entry disappears
+    // before that frame runs, draftRef still holds the pre-edit text while
+    // the DOM shows the first typed burst. The teardown must read the LIVE
+    // editor for the dirty decision and the salvage — reading draftRef alone
+    // repaints the typed work away as "clean".
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'original words' })!
+
+    const loadIntoComposer = vi.fn()
+    const queueEditRef: { current: QueueEditState | null } = { current: null }
+    const draftRef = { current: '' }
+    // The live editor DOM is a frame ahead of draftRef: the user typed, the
+    // rAF flush has not run yet.
+    const liveEditorText = { current: 'original words plus the latest input' }
+
+    const hook = renderHook(() =>
+      useComposerQueue({
+        activeQueueSessionKey: SESSION_KEY,
+        attachments: [],
+        busy: false,
+        clearDraft: () => undefined,
+        draftRef,
+        focusInput: () => undefined,
+        loadIntoComposer,
+        onCancel: vi.fn(),
+        onSteer: undefined,
+        onSubmit: vi.fn(async () => true),
+        queueEditRef,
+        queueSessionKey: SESSION_KEY,
+        readLiveText: () => liveEditorText.current,
+        sessionId: 'rt-session-queue-hook'
+      })
+    )
+
+    act(() => {
+      hook.result.current.beginQueuedEdit(entry)
+    })
+    loadIntoComposer.mockClear()
+
+    // Input landed in the DOM but not yet in draftRef; the entry vanishes
+    // before the flush frame.
+    removeQueuedPrompt(SESSION_KEY, entry.id)
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The dirty buffer (per the live read) survives: no pre-edit repaint…
+    expect(loadIntoComposer).not.toHaveBeenCalled()
+    expect(queueEditRef.current).toBeNull()
+    // …and the notice carries the typed burst, not the pre-edit text.
+    const notice = getSalvagedEditNotice(SESSION_KEY)
+    expect(notice?.undoText).toBe('original words plus the latest input')
+    expect(notice?.currentText).toBe('original words plus the latest input')
+  })
+
+  it('keeps each session\'s pending recovery independent across sessions (#88621)', () => {
+    // Store-level contract: a cancel in session B must never erase session
+    // A's pending recovery, and undo/dismiss consume only their own record.
+    // (Two sessions losing an edit independently is the documented lifetime
+    // of the session-scoped notice.)
+    announceSalvagedEdit('session-a', '', 'unsaved replacement A')
+    announceSalvagedEdit('session-b', '', 'unsaved replacement B')
+
+    // Both records coexist.
+    expect(getSalvagedEditNotice('session-a')?.undoText).toBe('unsaved replacement A')
+    expect(getSalvagedEditNotice('session-b')?.undoText).toBe('unsaved replacement B')
+
+    // Undo consumes only the matching session's record.
+    expect(undoSalvagedEdit('session-a', '')).toBe('unsaved replacement A')
+    expect(getSalvagedEditNotice('session-a')).toBeNull()
+    expect(getSalvagedEditNotice('session-b')?.undoText).toBe('unsaved replacement B')
+
+    // Dismissing B leaves nothing; A was already consumed.
+    dismissSalvagedEdit('session-b')
+    expect(getSalvagedEditNotice('session-b')).toBeNull()
+    expect($salvagedEditNoticesBySession.get()).toEqual({})
   })
 })
+
