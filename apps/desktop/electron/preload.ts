@@ -620,6 +620,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
     run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
   },
+  installs: {
+    list: () => ipcRenderer.invoke('hermes:installs:list'),
+    remove: id => ipcRenderer.invoke('hermes:installs:remove', { id }),
+    dismiss: () => ipcRenderer.invoke('hermes:installs:dismiss')
+  },
+  onInstallsNotice: callback => {
+    const listener = (_event, payload) => callback(payload)
+
+    ipcRenderer.on('hermes:installs:notice', listener)
+
+    return () => ipcRenderer.removeListener('hermes:installs:notice', listener)
+  },
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
