@@ -1344,15 +1344,14 @@ export function KanbanBoardPage() {
 
   return (
     <PageShell>
-      {/* The full page projects this into its page header; a split tile has
-          none, so the switcher stays here in the row. */}
-      <WorkspacePageHeaderControl id="kanban:board-switcher">
-        <BoardSwitcher />
-      </WorkspacePageHeaderControl>
-
       <PageHeader>
         <PageHeaderTitle>{k.title}</PageHeaderTitle>
         <PageHeaderCount>{total}</PageHeaderCount>
+        {/* The full page projects this into its page header; a split tile has
+            none, so the switcher stays here in the row. */}
+        <WorkspacePageHeaderControl id="kanban:board-switcher">
+          <BoardSwitcher />
+        </WorkspacePageHeaderControl>
         {board && (
           <FilterMenu
             archived={archived}

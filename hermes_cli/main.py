@@ -1969,6 +1969,9 @@ cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_comman
 cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", doc='Show status of all components.')
 cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", "cron_command", forward_return=True, doc='Cron job management.')
 cmd_webhook = _forward_command("cmd_webhook", "hermes_cli.webhook", "webhook_command", doc='Webhook subscription management.')
+cmd_workflow = _forward_command(
+    "cmd_workflow", "hermes_cli.subcommands.workflow", "workflow_command", doc="Stored workflow runs — list, start, signal."
+)
 cmd_kanban = _forward_command("cmd_kanban", "hermes_cli.kanban", "kanban_command", forward_return=True, doc='Multi-profile collaboration board.')
 cmd_project = _forward_command("cmd_project", "hermes_cli.projects_cmd", "projects_command", forward_return=True, doc='Manage projects (named, multi-folder workspaces).')
 cmd_hooks = _forward_command("cmd_hooks", "hermes_cli.hooks", "hooks_command", doc='Shell-hook inspection and management.')

@@ -8,7 +8,7 @@
 //                 markers between segments of a run. Dense, informational.
 //   checkpoints — the durable stops the ⏮/⏭ buttons jump between.
 
-import { Button, cn, Codicon, GHOST_ICON_BTN, PRIMARY_ICON_FACE } from '@hermes/plugin-sdk'
+import { Button, cn, Codicon, GHOST_ICON_BTN, PRIMARY_ICON_FACE, Tip } from '@hermes/plugin-sdk'
 import { type PointerEvent, useCallback, useMemo, useRef, useState } from 'react'
 
 import type { Player } from './player'
@@ -184,6 +184,7 @@ export function Timeline({ p }: { p: Player }) {
   const pausing = p.pauseState === 'pausing'
   const tipHead = scrub?.head ?? p.head
   const tipPct = scrub ? scrub.ratio * 100 : pct
+
   const tipLabel = armed
     ? [fmtScrub(elapsedAt(p.events, tipHead)), splits[Math.max(0, tipHead - 1)]?.label].filter(Boolean).join(' · ')
     : ''
@@ -211,52 +212,60 @@ export function Timeline({ p }: { p: Player }) {
 
   return (
     <div className="tl">
-      <Button
-        className={cn(PRIMARY_ICON_FACE, pausing && 'animate-pulse')}
-        disabled={!runBtn.act}
-        onClick={runBtn.act}
-        size="icon-2xs"
-        title={runBtn.title}
-      >
-        {/* `triangle-right` is the only genuinely solid play in the set — both
-            `play` and `debug-start` draw an outline around the triangle, which
-            on the filled primary circle reads as a disabled ring. This matches
-            the solid bars of the `debug-pause` it swaps with. */}
-        <Codicon name={runBtn.pause ? 'debug-pause' : 'triangle-right'} />
-      </Button>
-      <Button
-        className={GHOST_ICON_BTN}
-        disabled={!armed}
-        onClick={p.restart}
-        size="icon"
-        title="Restart run"
-        variant="ghost"
-      >
-        <Codicon name="debug-restart" size="0.875rem" />
-      </Button>
+      <Tip label={runBtn.title}>
+        <Button
+          aria-label={runBtn.title}
+          className={cn(PRIMARY_ICON_FACE, pausing && 'animate-pulse')}
+          disabled={!runBtn.act}
+          onClick={runBtn.act}
+          size="icon-2xs"
+        >
+          {/* `triangle-right` is the only genuinely solid play in the set — both
+              `play` and `debug-start` draw an outline around the triangle, which
+              on the filled primary circle reads as a disabled ring. This matches
+              the solid bars of the `debug-pause` it swaps with. */}
+          <Codicon name={runBtn.pause ? 'debug-pause' : 'triangle-right'} />
+        </Button>
+      </Tip>
+      <Tip label="Restart run">
+        <Button
+          aria-label="Restart run"
+          className={GHOST_ICON_BTN}
+          disabled={!armed}
+          onClick={p.restart}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="debug-restart" size="0.875rem" />
+        </Button>
+      </Tip>
       {/* The debug toolbar's reverse/forward pair. Checkpoints are the durable
           stops in a run, which is the same thing VS Code's continue and reverse
           continue jump between. */}
-      <Button
-        className={GHOST_ICON_BTN}
-        disabled={!armed}
-        onClick={() => p.stepCheckpoint(-1)}
-        size="icon"
-        title="Previous checkpoint"
-        variant="ghost"
-      >
-        <Codicon name="debug-reverse-continue" size="0.875rem" />
-      </Button>
-      <Button
-        className={GHOST_ICON_BTN}
-        disabled={!armed}
-        onClick={() => p.stepCheckpoint(1)}
-        size="icon"
-        title="Next checkpoint"
-        variant="ghost"
-      >
-        <Codicon name="debug-continue" size="0.875rem" />
-      </Button>
+      <Tip label="Previous checkpoint">
+        <Button
+          aria-label="Previous checkpoint"
+          className={GHOST_ICON_BTN}
+          disabled={!armed}
+          onClick={() => p.stepCheckpoint(-1)}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="debug-reverse-continue" size="0.875rem" />
+        </Button>
+      </Tip>
+      <Tip label="Next checkpoint">
+        <Button
+          aria-label="Next checkpoint"
+          className={GHOST_ICON_BTN}
+          disabled={!armed}
+          onClick={() => p.stepCheckpoint(1)}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="debug-continue" size="0.875rem" />
+        </Button>
+      </Tip>
 
       <div
         className={`tl-track nodrag nopan nowheel${armed ? '' : ' empty'}`}

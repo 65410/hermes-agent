@@ -12,8 +12,8 @@
  * only the pane part was ever tile-specific. A tile mounts this in a
  * layout-tree pane; a detached surface (the Workflows canvas) mounts it inside
  * itself. Neither gets a copy — the transcript, the tool cards, the streaming
- * indicators, attachments, voice and the model menu are the same code in both,
- * which is the only way they stay the same as the app moves.
+ * indicators, attachments, voice and the model menus are the same code in
+ * both, which is the only way they stay the same as the app moves.
  *
  * Presentation is the caller's job, and CSS is how it's done: HUD mode already
  * restyles this exact tree through `[data-hud-shell]` on an ancestor rather
@@ -29,8 +29,9 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
 import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
+import { ReasoningMenuPanel } from '@/app/shell/reasoning-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
-import { transcribeAudio } from '@/hermes'
+import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope } from '@/store/composer'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -45,22 +46,23 @@ import { type SessionView, SessionViewProvider } from './session-view'
 
 import { ChatView } from '.'
 
-// Module-level so these ChatView props are referentially stable — a surface
-// like this has no pin/delete affordance, and transcription needs no per-chat
-// state.
+// Module-level constants so these ChatView props are referentially stable —
+// a surface like this has no pin/delete affordance, and transcription needs no
+// per-chat state.
 const noop = () => undefined
 
-const chatTranscribeAudio = async (audio: Blob) => {
+const chatTranscribeAudio = async (audio: Blob, owner?: ResolvedOwner) => {
   // Client-direct first (profile's own STT provider, no gateway audio hop);
   // relay when the provider is not client-callable. Same ladder as the main
-  // composer's transcribeVoiceAudio.
-  const direct = await transcribeAudioClientDirect(audio)
+  // composer's transcribeVoiceAudio. `owner` is the recording's owner — the
+  // chat's (connection, profile), resolved when its mic opened.
+  const direct = await transcribeAudioClientDirect(audio, owner)
 
   if (direct !== null) {
     return direct
   }
 
-  return (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
+  return (await transcribeAudio(await blobToDataUrl(audio), audio.type, owner)).transcript
 }
 
 export interface SessionChatProps {
@@ -71,11 +73,12 @@ export interface SessionChatProps {
   view: SessionView
   /** Backend that owns the session, when it isn't the ambient one. A tile
    *  keeps its persisted route; a local detached chat has none. */
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: null | SessionProfileRoute
   /** The runtime was reaped mid-sequence and re-resumed onto a new id. The
-   *  caller owns where that gets recorded (tile registry, plugin storage). */
+   *  caller owns where that gets recorded (tile registry, plugin storage);
+   *  omitted, it lands in the tile registry. */
   onRuntimeBound?: (runtimeId: string) => void
-  /** Rendered in the composer's model pill. Omit for no model menu. */
+  /** Render the composer's model and reasoning menus. */
   modelMenu?: boolean
   /** The thread's "retry resuming this session" affordance. */
   onRetryResume?: () => void
@@ -99,7 +102,16 @@ export function SessionChat({
     [ownerRoute, requestGateway]
   )
 
-  const { selectModel } = useModelControls({ queryClient, requestGateway: requestOwnGateway })
+  const ownerConnectionId = ownerRoute?.connectionId || undefined
+  const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile || undefined
+
+  const { selectModel } = useModelControls({
+    cacheOwnerConnectionId: ownerConnectionId,
+    cacheProfile: ownerProfile,
+    queryClient,
+    requestGateway: requestOwnGateway
+  })
+
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
@@ -107,14 +119,20 @@ export function SessionChat({
   // One attachment set + focus key per surface, stable for its lifetime.
   const attachments = useRef(createComposerAttachmentScope()).current
 
+  // Tiles route on `tile:<storedId>` (ask directives, HUD handoff); a detached
+  // surface keys its own so it never answers for a tile of the same session.
+  const target = view.kind === 'tile' ? `tile:${storedSessionId}` : `session:${storedSessionId}`
+
   const scope = useMemo<ComposerScope>(
     () => ({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
-      target: `session:${storedSessionId}`
+      connectionId: ownerConnectionId,
+      profile: ownerProfile,
+      target
     }),
-    [attachments, runtimeId, storedSessionId, view.$messages]
+    [attachments, ownerConnectionId, ownerProfile, runtimeId, target, view.$messages]
   )
 
   // Actions must keep the persisted owner route. The ambient gateway hook
@@ -165,20 +183,34 @@ export function SessionChat({
   const onPickFolders = useCallback(() => void pickContextPaths('folder'), [pickContextPaths])
   const onPickImages = useCallback(() => void pickImages(), [pickImages])
   const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
+  const menuProfile = ownerProfile || activeGatewayProfile
 
-  // Rendered under THIS SessionView so the pill + switch target this runtime,
-  // not the primary (which may be mid-turn).
+  // Model + reasoning menus render under THIS SessionView so the pill and the
+  // switch target this runtime, not the primary (which may be mid-turn).
   const modelMenuContent = useMemo(
     () =>
       modelMenu && gatewayOpen ? (
         <ModelMenuPanel
-          gateway={gateway || undefined}
           onSelectModel={selectModel}
-          profile={ownerRoute?.profile || activeGatewayProfile}
+          ownerConnectionId={ownerConnectionId}
+          profile={menuProfile}
           requestGateway={requestOwnGateway}
         />
       ) : null,
-    [activeGatewayProfile, gateway, gatewayOpen, modelMenu, ownerRoute?.profile, requestOwnGateway, selectModel]
+    [gatewayOpen, menuProfile, modelMenu, ownerConnectionId, requestOwnGateway, selectModel]
+  )
+
+  const reasoningMenuContent = useMemo(
+    () =>
+      modelMenu && gatewayOpen ? (
+        <ReasoningMenuPanel
+          onSelectModel={selectModel}
+          ownerConnectionId={ownerConnectionId}
+          profile={menuProfile}
+          requestGateway={requestOwnGateway}
+        />
+      ) : null,
+    [gatewayOpen, menuProfile, modelMenu, ownerConnectionId, requestOwnGateway, selectModel]
   )
 
   return (
@@ -187,10 +219,13 @@ export function SessionChat({
         <ChatView
           gateway={gateway}
           modelMenuContent={modelMenuContent}
+          modelOptionsOwnerConnectionId={ownerConnectionId}
+          modelOptionsProfile={menuProfile}
           onAddContextRef={addContextRefAttachment}
           onAddUrl={onAddUrl}
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
+          onAttachPastedText={composer.attachPastedText}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}
@@ -204,10 +239,13 @@ export function SessionChat({
           onRestoreToMessage={actions.restoreToMessage}
           onRetryResume={onRetryResume}
           onSteer={actions.steerPrompt}
+          onSteerHidden={actions.injectHiddenPrompt}
           onSubmit={actions.submitText}
           onThreadMessagesChange={actions.handleThreadMessagesChange}
           onToggleSelectedPin={noop}
           onTranscribeAudio={chatTranscribeAudio}
+          reasoningMenuContent={reasoningMenuContent}
+          requestModelOptionsForOwner={requestOwnGateway}
         />
       </ComposerScopeProvider>
     </SessionViewProvider>

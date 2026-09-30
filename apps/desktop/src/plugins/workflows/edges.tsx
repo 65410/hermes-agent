@@ -1,4 +1,4 @@
-import { Codicon } from '@hermes/plugin-sdk'
+import { Codicon, Tip } from '@hermes/plugin-sdk'
 import { BaseEdge, EdgeLabelRenderer, type EdgeProps, getBezierPath, Position, useNodesData } from '@xyflow/react'
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
@@ -309,45 +309,47 @@ export function DataEdge(props: EdgeProps) {
           <span aria-hidden="true" className="edge-nub" />
           <div className="edge-acts">
             {canSplice && (
+              <Tip label="Add a step here">
+                <button
+                  aria-label="Add a step here"
+                  className="edge-add"
+                  onClick={e => {
+                    e.stopPropagation()
+                    addStep({ on: 'edge', edgeId: id, at: { x: midX, y: midY } })
+                  }}
+                  onPointerDown={e => e.stopPropagation()}
+                  tabIndex={hot ? 0 : -1}
+                  type="button"
+                >
+                  {/* Inline SVG, not the codicon font. The glyph box centres
+                      perfectly (measured 1.74px on all four sides) but the +
+                      INSIDE the font's em box sits optically low-left at this
+                      size — icon fonts are drawn on a 16px grid and their
+                      bearings don't survive a 9.86px button on fractional
+                      pixels. A vector crosshair is geometry: two strokes through
+                      the exact middle of the viewBox, centred by construction at
+                      every zoom. */}
+                  <svg aria-hidden="true" className="edge-add-glyph" viewBox="0 0 10 10">
+                    <path d="M5 1.5 V8.5 M1.5 5 H8.5" />
+                  </svg>
+                </button>
+              </Tip>
+            )}
+            <Tip label="Delete this wire">
               <button
-                aria-label="Add a step here"
-                className="edge-add"
+                aria-label="Delete this wire"
+                className="edge-cut"
                 onClick={e => {
                   e.stopPropagation()
-                  addStep({ on: 'edge', edgeId: id, at: { x: midX, y: midY } })
+                  cutEdge(id)
                 }}
                 onPointerDown={e => e.stopPropagation()}
                 tabIndex={hot ? 0 : -1}
-                title="Add a step here"
                 type="button"
               >
-                {/* Inline SVG, not the codicon font. The glyph box centres
-                    perfectly (measured 1.74px on all four sides) but the +
-                    INSIDE the font's em box sits optically low-left at this
-                    size — icon fonts are drawn on a 16px grid and their
-                    bearings don't survive a 9.86px button on fractional
-                    pixels. A vector crosshair is geometry: two strokes through
-                    the exact middle of the viewBox, centred by construction at
-                    every zoom. */}
-                <svg aria-hidden="true" className="edge-add-glyph" viewBox="0 0 10 10">
-                  <path d="M5 1.5 V8.5 M1.5 5 H8.5" />
-                </svg>
+                <Codicon name="trash" size={9} />
               </button>
-            )}
-            <button
-              aria-label="Delete this wire"
-              className="edge-cut"
-              onClick={e => {
-                e.stopPropagation()
-                cutEdge(id)
-              }}
-              onPointerDown={e => e.stopPropagation()}
-              tabIndex={hot ? 0 : -1}
-              title="Delete this wire"
-              type="button"
-            >
-              <Codicon name="trash" size={9} />
-            </button>
+            </Tip>
           </div>
         </div>
       </EdgeLabelRenderer>

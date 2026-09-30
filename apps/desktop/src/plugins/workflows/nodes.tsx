@@ -1,4 +1,4 @@
-import { Button, cn, Codicon, GlyphSpinner, PRIMARY_ICON_FACE, type SpinnerName } from '@hermes/plugin-sdk'
+import { Button, cn, Codicon, GlyphSpinner, PRIMARY_ICON_FACE, type SpinnerName, Tip } from '@hermes/plugin-sdk'
 import {
   Handle,
   type Node,
@@ -33,6 +33,7 @@ export interface NodeData {
 
 function fmtElapsed(ms: number) {
   const n = Math.max(0, Math.round(ms))
+
   if (n < 1000) {
     return `${n}ms`
   }
@@ -372,21 +373,25 @@ function NodeHead({ def, config, rt, play }: { def: StepDef; config: StepConfig;
 function ManualPlay() {
   const run = useRunNow()
 
+  const label = run.running ? 'Already running' : 'Run this workflow'
+
   return (
-    <Button
-      className={cn(PRIMARY_ICON_FACE, 'node-play nodrag nopan')}
-      disabled={run.running}
-      onClick={e => {
-        e.stopPropagation()
-        run.start()
-      }}
-      onMouseDown={e => e.stopPropagation()}
-      size="icon-2xs"
-      title={run.running ? 'Already running' : 'Run this workflow'}
-      type="button"
-    >
-      <Codicon name="triangle-right" />
-    </Button>
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className={cn(PRIMARY_ICON_FACE, 'node-play nodrag nopan')}
+        disabled={run.running}
+        onClick={e => {
+          e.stopPropagation()
+          run.start()
+        }}
+        onMouseDown={e => e.stopPropagation()}
+        size="icon-2xs"
+        type="button"
+      >
+        <Codicon name="triangle-right" />
+      </Button>
+    </Tip>
   )
 }
 
@@ -421,6 +426,7 @@ const VERDICT_LEAD = /^(?:group\s+)?(?:PASS|FAIL)\s*(?:·|→)\s*/
 
 function unwrapSummary(text: string) {
   const trimmed = text.replace(VERDICT_LEAD, '').trim()
+
   return trimmed.length >= 2 &&
     ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
     ? trimmed.slice(1, -1)
