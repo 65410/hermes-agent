@@ -20,6 +20,9 @@
  */
 
 import './workflows.css'
+import './workflows-nodes.css'
+import './workflows-edges.css'
+import './workflows-run.css'
 
 import {
   type HermesPlugin,
