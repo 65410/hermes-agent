@@ -91,6 +91,37 @@ def _is_workflow_route(route_name: str, route_config: dict) -> bool:
     return bool(route_config.get("hermes_workflow")) or str(route_name).startswith("wf-")
 
 
+def _hex_hmac(secret: str, data: bytes) -> str:
+    return hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
+
+
+def _timestamp_fresh(raw: str, stale_msg: str, *args) -> bool:
+    """True when integer timestamp header *raw* is within the replay window; unparseable → False,
+    stale → warn ``stale_msg % args`` and False."""
+    try:
+        age = abs(int(time.time()) - int(raw))
+    except (TypeError, ValueError):
+        return False
+    if age > _V2_REPLAY_WINDOW_SECONDS:
+        logger.warning(stale_msg, *args)
+        return False
+    return True
+
+
+def _is_known_platform(name: str) -> bool:
+    """Cross-platform delivery target: built-in names or plugin-registered platforms."""
+    if name in _BUILTIN_DELIVER_PLATFORMS:
+        return True
+    with suppress(Exception):
+        from gateway.platform_registry import platform_registry
+        return platform_registry.is_registered(name)
+    return False
+
+
+def _json_error(message: str, status: int) -> "web.Response":
+    return web.json_response({"error": message}, status=status)
+
+
 def _peek_session_id(store, session_key: str):
     """Prefer the store's lock-held accessor; the private-path fallback is for older stores / test doubles."""
     if callable(peek := getattr(store, "peek_session_id", None)):
