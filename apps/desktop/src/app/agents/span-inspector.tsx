@@ -42,6 +42,12 @@ export function SpanInspector({ trace }: { trace: null | TraceDoc }) {
 
   meta.push([labels.duration, fmtDuration(span.duration)])
 
+  const firstToken = num('llm.first_token_s')
+
+  if (firstToken !== undefined) {
+    meta.push([labels.firstToken, fmtDuration(firstToken)])
+  }
+
   // Push an attribute row when present; numbers are thousands-formatted.
   const push = (label: string, key: string) => {
     const v = attrs[key]
@@ -77,6 +83,7 @@ export function SpanInspector({ trace }: { trace: null | TraceDoc }) {
   }
 
   const input = attrs['input.value']
+  const thinking = attrs['llm.reasoning.value']
   const output = attrs['output.value']
 
   return (
@@ -96,6 +103,7 @@ export function SpanInspector({ trace }: { trace: null | TraceDoc }) {
         ))}
       </dl>
       {input ? <InspectorBlock label={labels.input} value={String(input)} /> : null}
+      {thinking ? <InspectorBlock label={labels.thinking} value={String(thinking)} /> : null}
       {output ? <InspectorBlock label={labels.output} value={String(output)} /> : null}
     </div>
   )

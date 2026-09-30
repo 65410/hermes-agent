@@ -2767,6 +2767,7 @@ export const en: Translations = {
       status: 'status',
       started: 'started',
       duration: 'duration',
+      firstToken: 'first token',
       model: 'model',
       tokensIn: 'tokens in',
       tokensOut: 'tokens out',
@@ -2777,6 +2778,7 @@ export const en: Translations = {
       source: 'source',
       session: 'session',
       input: 'input',
+      thinking: 'thinking',
       output: 'output'
     }
   },

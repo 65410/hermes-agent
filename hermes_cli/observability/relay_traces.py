@@ -22,7 +22,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -217,6 +217,11 @@ class _Recorder:
 
     def attached(self, host: Any) -> bool:
         return getattr(host, "runtime_id", None) in self._homes
+
+    @property
+    def recording(self) -> bool:
+        """Any profile attached: the per-token stream path's cheap early out."""
+        return bool(self._homes)
 
     def add_listener(self, listener: TraceListener) -> Callable[[], None]:
         with self._lock:
@@ -418,6 +423,10 @@ class _SpanBridge:
             host, session, span = opened
             host.run_in_session(session, close_span, host.relay, span, allow_closing=True)
 
+    def opened(self, key: tuple[str, str, str]) -> tuple[relay_runtime.RelayRuntime, Any, Any] | None:
+        with self._lock:
+            return self._open.get(key)
+
     def abandon(self, session_id: str) -> None:
         """Close spans whose closing hook never fired (a vetoed tool, an interrupted call)."""
         with self._lock:
@@ -436,6 +445,102 @@ class _SpanBridge:
 
 
 SPANS = _SpanBridge()
+
+
+# ── streaming ─────────────────────────────────────────────────────────────────────────────────
+
+STREAM_FIRST_TOKEN_MARK = "hermes.llm.first_token"
+STREAM_MARK = "hermes.llm.stream"
+_STREAM_FLUSH_SECONDS = 0.5
+
+
+@dataclass
+class _Stream:
+    started: bool = False
+    kind: str = ""
+    parts: list[str] = field(default_factory=list)
+    flushed_at: float = 0.0
+
+
+class _StreamMarks:
+    """Relay has no in-call streaming events, so a model call's progress is recorded as Relay marks
+    under its span: one ``hermes.llm.first_token``, then ``hermes.llm.stream`` chunks of the text or
+    reasoning streamed since the last mark (at most every ``_STREAM_FLUSH_SECONDS``, and whenever
+    the stream switches between reasoning and text)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._streams: dict[tuple[str, str], _Stream] = {}
+
+    @staticmethod
+    def _take(stream: _Stream) -> tuple[str, dict[str, Any]] | None:
+        text, stream.parts = "".join(stream.parts), []
+        stream.flushed_at = time.monotonic()
+        return (STREAM_MARK, {"kind": stream.kind, "text": text}) if text else None
+
+    def delta(self, session_id: str, request_id: str, kind: str, text: str) -> None:
+        if not text or not request_id:
+            return
+        marks: list[tuple[str, dict[str, Any]]] = []
+        with self._lock:
+            stream = self._streams.setdefault((session_id, request_id), _Stream())
+            if not stream.started:
+                stream.started, stream.flushed_at = True, time.monotonic()
+                marks.append((STREAM_FIRST_TOKEN_MARK, {"kind": kind}))
+            if stream.kind and stream.kind != kind and (mark := self._take(stream)):
+                marks.append(mark)
+            stream.kind = kind
+            stream.parts.append(text)
+            if time.monotonic() - stream.flushed_at >= _STREAM_FLUSH_SECONDS and (mark := self._take(stream)):
+                marks.append(mark)
+        for name, data in marks:
+            _mark_llm(session_id, request_id, name, data)
+
+    def finish(self, session_id: str, request_id: str) -> None:
+        with self._lock:
+            stream = self._streams.pop((session_id, request_id), None)
+            mark = self._take(stream) if stream is not None else None
+        if mark is not None:
+            _mark_llm(session_id, request_id, *mark)
+
+    def abandon(self, session_id: str) -> None:
+        with self._lock:
+            for key in [key for key in self._streams if key[0] == session_id]:
+                self._streams.pop(key, None)
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._streams.clear()
+
+
+STREAMS = _StreamMarks()
+
+
+def _mark_llm(session_id: str, request_id: str, name: str, data: dict[str, Any]) -> None:
+    """Mark the model call ``request_id``. Relay marks attach only to scopes, never to an LLM call
+    handle, so the mark sits on the scope the call runs in (the managed pipeline's logical call
+    scope, else the turn) and names the call: ``llm_uuid`` for a manual span, ``api_request_id``
+    always."""
+    host = relay_runtime.get_runtime(create=False)
+    turn = relay_runtime.active_turn(session_id)
+    session = None if host is None else host.get_session(session_id)
+    if host is None or session is None or turn is None or turn.lease.host is not host or not RECORDER.attached(host):
+        return
+    handle = turn.logical_llm_calls.get(request_id) or turn.handle
+    if handle is None:
+        return
+    opened = SPANS.opened((session_id, "llm", request_id))
+    call = {"api_request_id": request_id, **({"llm_uuid": str(opened[2].uuid)} if opened is not None else {})}
+    host.run_in_session(session, host.relay.scope.event, name, handle=handle, data=_bound({**data, **call}))
+
+
+def note_stream_delta(session_id: str, request_id: str, kind: str, text: str) -> None:
+    """Record streamed model output for the trace; called from the agent's stream path per delta."""
+    if RECORDER.recording:
+        try:
+            STREAMS.delta(session_id, request_id, kind, text)
+        except Exception:
+            logger.debug("Hermes trace stream mark failed", exc_info=True)
 
 
 def _llm_key(kw: dict[str, Any]) -> tuple[str, str, str]:
@@ -531,6 +636,8 @@ def _finish_llm(kw: dict[str, Any]) -> None:
         except ValueError:  # Relay rejected the annotation; the span still has to close
             relay.llm.call_end(span, response_data, metadata=status, timestamp=_timestamp(kw.get("ended_at")))
 
+    session_id, _kind, request_id = _llm_key(kw)
+    STREAMS.finish(session_id, request_id)  # the streamed tail lands inside the call it belongs to
     SPANS.finish(_llm_key(kw), close_span)
 
 
@@ -584,9 +691,14 @@ _HOOK_HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "post_auxiliary_call": _finish_llm,
     "pre_tool_call": _start_tool,
     "post_tool_call": _finish_tool,
-    "on_session_end": lambda kw: SPANS.abandon(str(kw.get("session_id") or "")),
+    "on_session_end": lambda kw: _abandon(str(kw.get("session_id") or "")),
 }
 HANDLED_HOOKS = frozenset(_HOOK_HANDLERS)
+
+
+def _abandon(session_id: str) -> None:
+    STREAMS.abandon(session_id)
+    SPANS.abandon(session_id)
 
 
 def handles_hook(hook_name: str) -> bool:
@@ -609,3 +721,4 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
 def _reset_for_tests() -> None:
     RECORDER.reset_for_tests()
     SPANS.reset_for_tests()
+    STREAMS.reset_for_tests()

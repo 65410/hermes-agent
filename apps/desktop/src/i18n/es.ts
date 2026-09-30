@@ -3063,6 +3063,7 @@ export const esOverrides = {
       status: 'estado',
       started: 'inicio',
       duration: 'duración',
+      firstToken: 'primer token',
       model: 'modelo',
       tokensIn: 'tokens entrada',
       tokensOut: 'tokens salida',
@@ -3073,6 +3074,7 @@ export const esOverrides = {
       source: 'origen',
       session: 'sesión',
       input: 'entrada',
+      thinking: 'razonamiento',
       output: 'salida'
     }
   },

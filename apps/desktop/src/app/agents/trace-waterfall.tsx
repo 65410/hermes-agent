@@ -23,6 +23,7 @@ import {
   clearHoveredSpan,
   flattenSpanTree,
   type TraceDoc,
+  type TracePhase,
   type TraceSpanNode
 } from '@/store/trace'
 
@@ -499,7 +500,22 @@ export function TraceWaterfall({ trace, viewKey }: { trace: TraceDoc; viewKey: s
                     }}
                     style={{ left: `${left}%`, minWidth: 2, width: `${width * 100}%` }}
                     type="button"
-                  />
+                  >
+                    {node.phases?.map(phase => (
+                      <PhaseFill
+                        from={
+                          (tmap.toV(phase.start) - tmap.toV(node.start)) /
+                          (tmap.toV(node.end) - tmap.toV(node.start) || 1)
+                        }
+                        key={`${phase.kind}:${phase.start}`}
+                        kind={phase.kind}
+                        to={
+                          (tmap.toV(phase.end) - tmap.toV(node.start)) /
+                          (tmap.toV(node.end) - tmap.toV(node.start) || 1)
+                        }
+                      />
+                    ))}
+                  </button>
                   {/* On-lane label: name + duration, anchored at the bar start.
                       Only when the start is in view AND the bar is wide enough to
                       host it (or it's active) — otherwise sliver bars (e.g. a
@@ -522,6 +538,27 @@ export function TraceWaterfall({ trace, viewKey }: { trace: TraceDoc; viewKey: s
         </div>
       </div>
     </div>
+  )
+}
+
+// Inside a model call's bar: dimmed while waiting for the first token, hatched while the
+// model reasons; streamed text is the bar itself.
+const REASONING_HATCH = 'repeating-linear-gradient(135deg, rgb(255 255 255 / 0.18) 0 2px, transparent 2px 5px)'
+
+function PhaseFill({ from, kind, to }: { from: number; kind: TracePhase['kind']; to: number }) {
+  if (kind === 'text') {
+    return null
+  }
+
+  return (
+    <span
+      className={cn('pointer-events-none absolute inset-y-0', kind === 'wait' && 'bg-black/35')}
+      style={{
+        backgroundImage: kind === 'reasoning' ? REASONING_HATCH : undefined,
+        left: `${Math.max(0, from) * 100}%`,
+        width: `${Math.max(0, Math.min(1, to) - Math.max(0, from)) * 100}%`
+      }}
+    />
   )
 }
 

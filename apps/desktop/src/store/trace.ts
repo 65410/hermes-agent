@@ -31,6 +31,15 @@ export interface TraceSpan {
   status: TraceSpanStatus
   sessionId: null | string
   attributes: Record<string, unknown>
+  /** A model call's streamed phases: waiting for the first token, then reasoning/text. */
+  phases?: TracePhase[]
+}
+
+export interface TracePhase {
+  kind: 'reasoning' | 'text' | 'wait'
+  /** Epoch seconds. */
+  start: number
+  end: number
 }
 
 export interface TraceDoc {

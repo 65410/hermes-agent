@@ -64,12 +64,15 @@ def test_unmanaged_turn_records_relay_llm_and_tool_spans_under_its_turn(relay_ho
     lifecycle.invoke_hook("pre_api_request", session_id="parent", api_request_id="r1", provider="openrouter",
                           api_mode="chat_completions", model="m1", started_at=started,
                           request_messages=[{"role": "user", "content": "list the files"}])
+    relay_traces.note_stream_delta("parent", "r1", "reasoning", "let me look")
+    relay_traces.note_stream_delta("parent", "r1", "text", "Listing")
     lifecycle.invoke_hook("post_api_request", session_id="parent", api_request_id="r1", ended_at=started + 1,
                           usage={"input_tokens": 12, "output_tokens": 3}, finish_reason="tool_calls",
                           response={"assistant_message": {"content": "", "tool_calls": []}})
     lifecycle.invoke_hook("pre_tool_call", session_id="parent", tool_name="delegate_task",
                           args={"goal": "read it"}, tool_call_id="call-1")
-    child_lease, child_turn = _turn("child", parent="parent")
+    with relay_runtime.spawning_tool_call("call-1"):  # what delegate_task binds around its children
+        child_lease, child_turn = _turn("child", parent="parent")
     lifecycle.invoke_hook("pre_tool_call", session_id="child", tool_name="read_file", args={"path": "a"},
                           tool_call_id="call-2")
     lifecycle.invoke_hook("post_tool_call", session_id="child", tool_name="read_file", tool_call_id="call-2",
@@ -92,6 +95,18 @@ def test_unmanaged_turn_records_relay_llm_and_tool_spans_under_its_turn(relay_ho
     assert by_name["openai.chat_completions"]["parent_uuid"] == parent_turn["uuid"]
     assert by_name["delegate_task"]["parent_uuid"] == parent_turn["uuid"]
     assert spans[by_name["read_file"]["parent_uuid"]]["name"] == "hermes.turn"  # the child's own turn
+    child_scope = next(s for s in spans.values() if (s.get("metadata") or {}).get("hermes.session_id") == "child")
+    assert child_scope["metadata"][relay_runtime.SPAWNED_BY_TOOL_CALL_KEY] == "call-1"
+    assert by_name["delegate_task"]["category_profile"]["tool_call_id"] == "call-1"
+    # Relay marks can't hang on an LLM call handle: they sit on the call's scope and name the call.
+    call = {"api_request_id": "r1", "llm_uuid": by_name["openai.chat_completions"]["uuid"]}
+    stream = [(e["name"], e.get("data")) for e in events
+              if e.get("kind") == "mark" and (e.get("data") or {}).get("api_request_id") == "r1"]
+    assert stream == [
+        (relay_traces.STREAM_FIRST_TOKEN_MARK, {"kind": "reasoning", **call}),
+        (relay_traces.STREAM_MARK, {"kind": "reasoning", "text": "let me look", **call}),
+        (relay_traces.STREAM_MARK, {"kind": "text", "text": "Listing", **call}),
+    ]
     ends = {e["uuid"]: e for e in events if e.get("scope_category") == "end"}
     llm_end = ends[by_name["openai.chat_completions"]["uuid"]]
     assert llm_end["category_profile"]["annotated_response"]["usage"]["prompt_tokens"] == 12
