@@ -14,11 +14,15 @@ import { atom } from 'nanostores'
 import { penCanvasTileOpen, penCanvasTileVisible, revealPenCanvasTile } from '@/app/chat/pen-tile'
 import { activePreviewImport, previewImportHandle } from '@/app/chat/right-rail/preview-import'
 import { openAgentPreview } from '@/app/session/hooks/open-agent-preview'
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import type { PenImportOptions, PenImportPick, PenImportResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { hostOf } from '@/lib/pen-web-import-intent'
+import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { openPenCanvas, restorePenCanvas, runPenTool } from '@/store/pen'
+import { $previewTabs, newBrowserTab } from '@/store/preview'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { $selectedStoredSessionId } from '@/store/session'
 
 export interface PenImportState {
@@ -182,6 +186,30 @@ async function undoPenImport(nodes: NonNullable<PenImportResult['nodes']>): Prom
     const failed = translateNow('pen.importUndoFailed')
 
     notifyError(new Error(tool.error ?? failed), failed)
+  }
+}
+
+/** The canvas tab's "Import from web…": bring the in-app browser forward. A
+ *  browser page already showing something gets the picker armed on it; with
+ *  no page yet, a fresh Browser tab opens for the address. The Import glyph in
+ *  the browser bar takes it from there. */
+export function openBrowserForPenImport(): void {
+  const tabs = $previewTabs.get()
+  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get() && t.target.kind === 'url') ?? tabs.findLast(t => t.target.kind === 'url')
+
+  if (!tab) {
+    newBrowserTab()
+
+    return
+  }
+
+  selectRightRailTab(tab.id)
+  revealTreePane(`${PREVIEW_TILE_PREFIX}:${tab.id}`)
+
+  const handle = previewImportHandle(tab.id)
+
+  if (handle && handle.guestId() !== undefined && !handle.loading() && !/^about:/.test(handle.page().url)) {
+    void togglePenImportPick(tab.id)
   }
 }
 

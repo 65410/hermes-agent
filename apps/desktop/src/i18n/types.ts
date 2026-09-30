@@ -4086,6 +4086,7 @@ export interface Translations {
     openFailed: string
     /** Import from the web — the preview strip's control and its status. */
     import: string
+    importFromWeb: string
     importPickElement: string
     importPicking: string
     importPickHint: string

@@ -20,7 +20,7 @@ import path from 'node:path'
 import { resolvePenAssetPath } from './assets'
 import { liveDocument, penDocumentFilePath } from './documents'
 import { isPenWebUrl } from './embed-url'
-import { isPenSchemaAction } from './mcp'
+import { isPenSchemaAction, penToolNames, unknownPenToolError } from './mcp'
 import type { PenDocument } from './state'
 import { documents, events, log } from './state'
 import { importedNodes, parseTopLevelNodes, type PenCanvasNode, starterFrames, topLevelNodesProbe } from './web-import-select'
@@ -49,6 +49,8 @@ interface WebBridge {
   pending: Map<string, PendingRequest>
   counter: number
   theme: 'dark' | 'light'
+  /** Names from the last `get-mcp-schema`; the page's list, not ours. */
+  toolNames: string[]
 }
 
 let bridge: WebBridge | null = null
@@ -199,7 +201,8 @@ export function bindPenWebGuest(guestContents: any, theme: 'dark' | 'light' = 'd
     connectTimer: null,
     pending: new Map(),
     counter: 0,
-    theme
+    theme,
+    toolNames: []
   })
 
   const current = () => bridge === own && !guestContents.isDestroyed?.()
@@ -368,7 +371,7 @@ function bridgeRequest(method: string, payload?: unknown, timeoutMs = REQUEST_TI
   })
 }
 
-/** Live tool list from the editor. Pencil changes this; never cache it. */
+/** Live tool list from the editor. Pencil changes this; every call asks again. */
 async function getPenMcpSchema(): Promise<unknown> {
   await waitForPenReady()
 
@@ -376,7 +379,13 @@ async function getPenMcpSchema(): Promise<unknown> {
 
   for (let attempt = 0; attempt < SCHEMA_TRIES; attempt++) {
     try {
-      return await bridgeRequest('get-mcp-schema')
+      const schema = await bridgeRequest('get-mcp-schema')
+
+      if (bridge) {
+        bridge.toolNames = penToolNames(schema)
+      }
+
+      return schema
     } catch (error) {
       lastError = error
 
@@ -408,6 +417,16 @@ export async function runPenTool(
   try {
     if (isPenSchemaAction(name)) {
       return { success: true, result: await getPenMcpSchema() }
+    }
+
+    if (bridge?.toolNames.length === 0) {
+      await getPenMcpSchema()
+    }
+
+    const unknown = unknownPenToolError(name, bridge?.toolNames ?? [])
+
+    if (unknown) {
+      return { success: false, error: unknown }
     }
 
     const result = (await bridgeRequest('mcp-tool-call', { name, arguments: args })) as McpToolResult

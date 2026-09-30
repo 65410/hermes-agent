@@ -122,12 +122,22 @@ PEN_CANVAS_SCHEMA = {
     "description": (
         "Design on a pen.dev canvas in the Hermes desktop app — the Canvas tab "
         "beside this chat. You and the user share one live canvas. "
-        "'open' opens a tab (args: {name?: 2-4 word title from the brief, "
-        "path?: absolute .pen file} — ALWAYS pass name when creating). "
-        "'close' puts the canvas away (file stays in the library). "
-        "'schema' re-fetches the editor's live MCP tool list (get-mcp-schema) "
-        "— call it when tools look stale; Pencil changes them. "
-        "open already returns that list. "
+        "HOW THE CANVAS IS CHANGED: the editor has no create/add/draw tools. "
+        "Every change is a pen script run with action='execute', "
+        "args={input: '<script>'} (Insert / Get / Delete / Print and the "
+        "rest of the pen API). The editor's tools are exactly the ones 'open' "
+        "returns (today: execute, get_app_state, get_style, read_skill); any "
+        "other name is refused. "
+        "Workflow: open → read_skill() (pen's design skill) → "
+        "read_skill({path: 'pen-schema.md'}) and read_skill({path: "
+        "'execute.md'}) — both required before the first execute → get_style "
+        "(the document's palette, type and spacing — match it) → execute in "
+        "small steps, checking with Print. "
+        "Host actions: 'open' opens a tab (args: {name?: 2-4 word title from "
+        "the brief, path?: absolute .pen file} — ALWAYS pass name when "
+        "creating) and returns the live tool list. 'close' puts the canvas "
+        "away (file stays in the library). 'schema' re-fetches the tool list "
+        "(get-mcp-schema) — call it when tools look stale; Pencil changes them. "
         "'import' brings a live web page onto the canvas as editable layers "
         "(args: {url?, selector?: one element by CSS selector, else the whole "
         "page}) — it loads url in the desktop's preview browser (or uses the "
@@ -139,17 +149,11 @@ PEN_CANVAS_SCHEMA = {
         "recreated as a design / mockup / wireframe / Figma-style file, or "
         "asks to redesign an existing site: offer 'I can import it to the "
         "canvas' even if no canvas is open. "
-        "Any other action is an editor tool "
-        "from that list, forwarded verbatim. Workflow: open → read_skill "
-        "(the editor's design guidelines — read them before designing anything) "
-        "→ get_style (the document's palette, type and spacing — match it) → "
-        "use the returned tools → edit in small steps. If no Canvas tab is "
-        "open, call open first (import opens one itself). Image fills "
-        "(Generate 'ai' or "
-        "'stock') need the user signed into pen and otherwise stay pending "
-        "forever: if they are still pending on your next check, say so and "
-        "ask the user to sign in with pen's Sign In button — never sleep, "
-        "wait on or re-generate them."
+        "If no Canvas tab is open, call open first (import opens one itself). "
+        "Image fills (Generate 'ai' or 'stock') need the user signed into pen "
+        "and otherwise stay pending forever: if they are still pending on your "
+        "next check, say so and ask the user to sign in with pen's Sign In "
+        "button — never sleep, wait on or re-generate them."
     ),
     "parameters": {
         "type": "object",
@@ -157,16 +161,19 @@ PEN_CANVAS_SCHEMA = {
             "action": {
                 "type": "string",
                 "description": (
-                    "'open' or 'close' for the pane, 'schema' for the live "
-                    "MCP tool list, 'import' to bring a web page onto the "
-                    "canvas; any other string is an editor tool name from "
-                    "that list."
+                    "'open' / 'close' for the pane, 'schema' for the live tool "
+                    "list, 'import' to bring a web page onto the canvas, or an "
+                    "editor tool name from that list — 'execute' for every "
+                    "canvas change, 'read_skill', 'get_style', 'get_app_state'. "
+                    "Never a made-up name."
                 ),
             },
             "args": {
                 "type": "object",
                 "description": (
                     "Arguments for the action, passed to the editor verbatim. "
+                    "For execute: {input: '<pen script>'} (the key is input). "
+                    "For read_skill: {path?: 'pen-schema.md' | 'execute.md' | …}. "
                     "For import: {url?: page to load first, selector?: CSS "
                     "selector of the one element to import}. "
                     "Omit when the action needs none."

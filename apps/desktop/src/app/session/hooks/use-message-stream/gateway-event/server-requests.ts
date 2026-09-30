@@ -597,6 +597,12 @@ const penTool: Handler = ({ deps, isActiveSession, request, sessionId }) => {
               docId: doc.docId,
               fileURI: doc.fileURI || null,
               tools,
+              // The list above has no draw tools, and a model that only reads it
+              // invents some. Say how the canvas is actually changed.
+              start:
+                "Every change to the canvas is a script run with execute({ input: '<pen script>' }). " +
+                "Before the first execute: read_skill(), then read_skill({ path: 'pen-schema.md' }) and " +
+                "read_skill({ path: 'execute.md' }); get_style for the document's palette and type.",
               schemaError: schema.success ? undefined : schema.error
             }
           }

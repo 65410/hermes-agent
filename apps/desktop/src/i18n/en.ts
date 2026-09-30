@@ -4832,6 +4832,7 @@ export const en: Translations = {
   pen: {
     openFailed: 'Could not open the canvas',
     import: 'Import to canvas',
+    importFromWeb: 'Import from web…',
     importPickElement: 'Pick an element',
     importPicking: 'Stop picking',
     importPickHint: 'Click an element · Enter imports · Esc stops',

@@ -33,6 +33,8 @@ export interface CanvasProvider {
    *  with a singleton guest tears it down here so the other window's can
    *  take over. */
   popOut?: () => void
+  /** Provider rows for the tile's tab menu, above the canvas-wide ones. */
+  tabMenu?: (kit: MenuKit) => ReactNode
 }
 
 const providers = new Map<string, CanvasProvider>()
@@ -173,17 +175,25 @@ function dockCanvasTile(provider: string): void {
 }
 
 function canvasTabMenuPrefix(provider: string) {
-  if (!canOpenCanvasWindow()) {
+  const own = providerForKey(provider)?.tabMenu
+
+  if (!own && !canOpenCanvasWindow()) {
     return undefined
   }
 
-  return (kit: MenuKit) =>
-    renderActionItem(kit, {
-      icon: 'empty-window',
-      key: 'pop-out',
-      label: translateNow('preview.popOut'),
-      onSelect: () => popOutCanvasTile(provider)
-    })
+  return (kit: MenuKit) => (
+    <>
+      {own?.(kit)}
+      {canOpenCanvasWindow()
+        ? renderActionItem(kit, {
+            icon: 'empty-window',
+            key: 'pop-out',
+            label: translateNow('preview.popOut'),
+            onSelect: () => popOutCanvasTile(provider)
+          })
+        : null}
+    </>
+  )
 }
 
 function CanvasTabTitle({ provider }: { provider: string }) {

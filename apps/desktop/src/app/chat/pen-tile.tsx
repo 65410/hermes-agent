@@ -1,4 +1,7 @@
 import penMark from '@/assets/pen-mark.png'
+import { renderActionItem } from '@/components/ui/actions-menu'
+import { translateNow } from '@/i18n'
+import { openBrowserForPenImport } from '@/store/pen-import'
 
 import {
   canvasPopped,
@@ -27,7 +30,16 @@ registerCanvasProvider({
   },
   // One editor guest at a time: the window that hosts the pane owns it, and
   // main's bridge binds whichever guest attaches next.
-  popOut: destroyPenWebview
+  popOut: destroyPenWebview,
+  // The reverse door of the browser bar's Import glyph: from the canvas, go
+  // find a page to bring in. Nobody guesses that a browser can feed a canvas.
+  tabMenu: kit =>
+    renderActionItem(kit, {
+      icon: 'globe',
+      key: 'import-from-web',
+      label: translateNow('pen.importFromWeb'),
+      onSelect: openBrowserForPenImport
+    })
 })
 
 export function openPenCanvasTile(tab: Omit<CanvasTab, 'provider'>): void {
