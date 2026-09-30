@@ -2334,6 +2334,45 @@ export interface Translations {
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
     tokens: (value: number | string) => string
+    viewTrace: string
+    viewTree: string
+    traceTitle: string
+    traceSubtitle: (spans: number, duration: string) => string
+    traceNoSession: string
+    traceLoading: string
+    traceEmptyTitle: string
+    traceEmptyDesc: string
+    traceOffTitle: string
+    traceOffDesc: string
+    traceTruncated: string
+    allTurns: string
+    allTurnsShort: string
+    turnAria: (index: number) => string
+    turnTip: (index: number, label: string) => string
+    showLabels: string
+    hideLabels: string
+    inspectHint: string
+    spanSession: string
+    spanSubagent: string
+    spanTurn: string
+    spanLlmCall: string
+    inspector: {
+      kind: string
+      status: string
+      started: string
+      duration: string
+      model: string
+      tokensIn: string
+      tokensOut: string
+      reasoning: string
+      tokensTotal: string
+      finish: string
+      tool: string
+      source: string
+      session: string
+      input: string
+      output: string
+    }
   }
 
   commandCenter: {
