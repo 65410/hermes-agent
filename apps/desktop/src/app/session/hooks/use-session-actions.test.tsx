@@ -2637,6 +2637,7 @@ function WarmSwitchHarness({
     requestGateway,
     routedSessionId: null,
     resetViewSync: cache.resetViewSync,
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,

@@ -8,8 +8,8 @@ import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $clarifyRequests, setClarifyRequest, stageClarifyAnswer } from '@/store/clarify'
+import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import {
   $composerAttachments,
   $composerDraft,
