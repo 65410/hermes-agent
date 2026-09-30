@@ -66,6 +66,14 @@ def running(tmp_path, monkeypatch):
 
 
 class TestDiscovery:
+    @pytest.mark.platforms("windows")
+    def test_packaged_app_paths_cover_the_bundled_per_user_install(self, tmp_path, monkeypatch):
+        from hermes_cli import gui_uninstall
+
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        assert tmp_path / "Programs" / "HermesBundled" in gui_uninstall.packaged_gui_app_paths()
+
     def test_running_and_home_checkout_are_found_and_current_is_marked(self, home, running):
         managed = _checkout(home / "hermes-agent")
 

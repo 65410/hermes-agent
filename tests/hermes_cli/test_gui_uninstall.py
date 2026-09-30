@@ -51,13 +51,6 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     assert summary["platform"] == sys.platform
 
 
-@pytest.mark.platforms("windows")
-def test_packaged_app_paths_cover_the_bundled_per_user_install(tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-
-    assert tmp_path / "Programs" / "HermesBundled" in gu.packaged_gui_app_paths()
-
-
 @pytest.mark.platforms("linux")
 def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
