@@ -21,7 +21,7 @@ import { hostOf } from '@/lib/pen-web-import-intent'
 import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { openPenCanvas, restorePenCanvas, runPenTool } from '@/store/pen'
-import { $previewTabs, newBrowserTab } from '@/store/preview'
+import { $previewTabs, isBrowserTab, newBrowserTab } from '@/store/preview'
 import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { $selectedStoredSessionId } from '@/store/session'
 
@@ -195,7 +195,7 @@ async function undoPenImport(nodes: NonNullable<PenImportResult['nodes']>): Prom
  *  the browser bar takes it from there. */
 export function openBrowserForPenImport(): void {
   const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get() && t.target.kind === 'url') ?? tabs.findLast(t => t.target.kind === 'url')
+  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get() && isBrowserTab(t)) ?? tabs.findLast(isBrowserTab)
 
   if (!tab) {
     newBrowserTab()
