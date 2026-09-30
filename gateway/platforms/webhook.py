@@ -81,14 +81,21 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
 
 
 def _is_workflow_route(route_name: str, route_config: dict) -> bool:
-    """True for a hook the Workflows canvas owns.
+    """True for a hook the workflow store minted for one of its workflows.
 
-    Such a route answers only to its workflow: it accepts an unsigned POST
-    (the unguessable URL is the credential) and 404s rather than falling
-    through to the generic agent dispatch. The `wf-` prefix is the fallback
-    for a route whose flag an older sync dropped.
+    Such a route answers only to its workflow: it accepts an unsigned POST (the
+    unguessable URL is the credential) and 404s rather than falling through to
+    the generic agent dispatch. The authority is the persisted workflow record
+    (``workflow.triggers.is_workflow_capability_route``), never the route's
+    name: an operator's static route called ``wf-*`` keeps its HMAC.
     """
-    return bool(route_config.get("hermes_workflow")) or str(route_name).startswith("wf-")
+    if route_config.get("hermes_workflow") is not True:
+        return False
+    try:
+        from workflow.triggers import is_workflow_capability_route
+    except ImportError:
+        return False
+    return is_workflow_capability_route(route_name, route_config)
 
 
 def _hex_hmac(secret: str, data: bytes) -> str:
@@ -473,8 +480,11 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Route %s has no HMAC secret; refusing request", route_name)
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
         if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
-            logger.warning("[webhook] Invalid signature for route %s", route_name)
-            return None, _json_error("Invalid signature", 401)
+            # A workflow's minted hook URL is its credential (curl-able, n8n-shaped); a request that
+            # does carry a signature is still verified, and no other route skips HMAC.
+            if self._request_carries_signature(request) or not _is_workflow_route(route_name, route_config):
+                logger.warning("[webhook] Invalid signature for route %s", route_name)
+                return None, _json_error("Invalid signature", 401)
         return raw_body, None
 
     @staticmethod
@@ -614,13 +624,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # rather than falling through to the generic agent dispatch.
         workflow_route = _is_workflow_route(route_name, route_config)
 
-        workflow_id = ""
-        try:
-            from workflow.triggers import workflow_id_for_route
-
-            workflow_id = workflow_id_for_route(route_name, route_config)
-        except Exception:
-            workflow_id = str(route_config.get("workflow") or "").strip()
+        workflow_id = str(route_config.get("workflow") or "").strip()
         if workflow_id:
             try:
                 from workflow.runner import start_matching, start_run

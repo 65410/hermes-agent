@@ -177,20 +177,14 @@ def _write_hook_script(workflow_id: str) -> str:
     return path.name
 
 
-def workflow_id_for_route(route_name: str, route_config: dict | None = None) -> str:
-    if isinstance(route_config, dict):
-        wid = str(route_config.get("workflow") or "").strip()
-        if wid:
-            return wid
-    token = str(route_name)[3:] if str(route_name).startswith("wf-") else ""
-    if not token:
-        return ""
-    from workflow.store import load_secrets
-
-    for wid, secret in load_secrets().items():
-        if secret == token:
-            return wid
-    return ""
+def is_workflow_capability_route(route: str, route_config: dict) -> bool:
+    """A hook this store minted: the ownership marker, the workflow it names, and the route the
+    store derives from that workflow's persisted secret all agree. Only such a route's URL is a
+    credential; a route merely called ``wf-*`` is an ordinary HMAC route."""
+    if not isinstance(route_config, dict) or route_config.get(_OWNED) is not True:
+        return False
+    wid = str(route_config.get("workflow") or "").strip()
+    return bool(wid) and bool(secret_for(wid)) and route_name(wid) == route
 
 
 def _write_tick_script(workflow_id: str) -> str:
