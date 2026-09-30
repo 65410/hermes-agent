@@ -91,6 +91,17 @@ def _is_workflow_route(route_name: str, route_config: dict) -> bool:
     return bool(route_config.get("hermes_workflow")) or str(route_name).startswith("wf-")
 
 
+def _peek_session_id(store, session_key: str):
+    """Prefer the store's lock-held accessor; the private-path fallback is for older stores / test doubles."""
+    if callable(peek := getattr(store, "peek_session_id", None)):
+        return peek(session_key)
+    if hasattr(store, "_ensure_loaded"):
+        with suppress(Exception):
+            store._ensure_loaded()
+    entry = (getattr(store, "_entries", {}) or {}).get(session_key)
+    return getattr(entry, "session_id", None) if entry else None
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -566,6 +577,11 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
             logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
+
+        # A workflow route answers only to its workflow: it accepts an
+        # unsigned POST (the unguessable URL is the credential) and 404s
+        # rather than falling through to the generic agent dispatch.
+        workflow_route = _is_workflow_route(route_name, route_config)
 
         workflow_id = ""
         try:
