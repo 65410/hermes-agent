@@ -486,6 +486,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
   const { t } = useI18n()
   const a = t.artifacts
   const isCanvas = artifact.kind === 'canvas'
+
   const kindLabel = isCanvas
     ? a.kindCanvas
     : artifact.kind === 'image'
@@ -493,6 +494,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
       : artifact.kind === 'file'
         ? a.kindFile
         : a.kindLink
+
   const [src, setSrc] = useState('')
 
   useEffect(() => {

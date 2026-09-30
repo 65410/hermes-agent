@@ -39,7 +39,7 @@ import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isPopoutWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
+import { isHudWindow, isPeerInstanceWindow, isPopoutWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'

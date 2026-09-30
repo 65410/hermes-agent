@@ -393,7 +393,7 @@ describe('tour request routing', () => {
 describe('pen canvas request routing', () => {
   afterEach(() => {
     deps.sessionStateByRuntimeIdRef.current.clear()
-    $selectedStoredSessionId.set(null)
+    setSelectedStoredSessionId(null)
     penStore.openPenCanvas.mockClear()
   })
 
@@ -402,7 +402,7 @@ describe('pen canvas request routing', () => {
     // when its tie matches the focused stored id; a runtime id parked the
     // editor off-screen on the very first "design me …" turn.
     deps.sessionStateByRuntimeIdRef.current.set('runtime-9', createClientSessionState('stored-9'))
-    $selectedStoredSessionId.set('stored-9')
+    setSelectedStoredSessionId('stored-9')
 
     deliver('pen.tool', { action: 'open', args: { name: 'Ember' }, session_id: 'runtime-9' }, 'stored-9')
 
