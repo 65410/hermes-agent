@@ -214,9 +214,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // The selector renders on the Skills tab too (Capabilities-wide), above the catalog's sort select.
-    await waitFor(() => expect(screen.getAllByRole('combobox')).toHaveLength(2))
-    const [trigger] = screen.getAllByRole('combobox')
+    // The selector renders on the Skills tab too (Capabilities-wide); the catalog's sort lives in its Filters popover.
+    const trigger = await screen.findByRole('combobox')
     await act(async () => {
       fireEvent.click(trigger)
     })
