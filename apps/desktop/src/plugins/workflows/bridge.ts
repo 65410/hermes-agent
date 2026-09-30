@@ -1,12 +1,13 @@
 /**
  * The seam Hermes edits the canvas through.
  *
- * The `workflow` tool blocks in the Python agent and emits `workflow.request`;
- * this answers it. Everything it can do, it does by calling `callTool` — the
- * SAME dispatcher the inspector, the drag handles and the in-canvas composer
- * go through. There is no privileged path: an edit from a chat turn and an
- * edit from your hands are the same operation on the same document, land in
- * the same undo history, and are validated by the same rules.
+ * The `workflow` tool blocks in the Python agent on a `workflow` server
+ * request; this answers it through the plugin server-request tap. Everything
+ * it can do, it does by calling `callTool` — the SAME dispatcher the
+ * inspector, the drag handles and the in-canvas composer go through. There
+ * is no privileged path: an edit from a chat turn and an edit from your
+ * hands are the same operation on the same document, land in the same undo
+ * history, and are validated by the same rules.
  *
  * Two ways in, because the canvas may not be on screen:
  *
@@ -255,27 +256,24 @@ function act(payload: Record<string, unknown>): Record<string, unknown> {
 // The wire
 // ---------------------------------------------------------------------------
 
-/** Listen for the tool's blocking request and answer it. Returns the disposer,
+/** Claim the `workflow` server request and answer it. Returns the disposer,
  *  for `ctx.onDispose`. */
 export function bindBridge(): () => void {
-  return host.onEvent('workflow.request', event => {
-    const payload = (event.payload ?? {}) as Record<string, unknown>
-    const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
-
-    if (!requestId) {
-      return
-    }
-
+  return host.onServerRequest('workflow', request => {
     // A throw here would strand the agent on the full 30s timeout, so every
-    // exit from this handler answers — including the failure.
+    // exit from this handler answers — including the failure. `act` is
+    // synchronous, but the claim is still taken up front: the request is
+    // answered (or failed) before this handler returns either way.
     let answer: Record<string, unknown>
 
     try {
-      answer = act(payload)
+      answer = act(request.params)
     } catch (error) {
       answer = { error: error instanceof Error ? error.message : String(error) }
     }
 
-    void host.request('workflow.respond', { request_id: requestId, text: JSON.stringify(answer) })
+    request.respond({ value: JSON.stringify(answer) })
+
+    return true
   })
 }
