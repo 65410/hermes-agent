@@ -527,6 +527,7 @@ export const ar = defineLocale({
       vaultSources: 'مديرو كلمات المرور',
       appUpdates: 'الإصدار والتحديثات',
       uninstall: 'إلغاء التثبيت',
+      installs: 'التثبيتات',
       billingOverview: 'نظرة عامة',
       billingPlans: 'الخطط'
     },

@@ -450,6 +450,7 @@ export const zhHant = defineLocale({
       vaultSources: '密碼管理員',
       appUpdates: '版本與更新',
       uninstall: '解除安裝',
+      installs: '安裝',
       billingOverview: '概覽',
       billingPlans: '方案'
     },
