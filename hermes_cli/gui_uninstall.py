@@ -61,9 +61,11 @@ def packaged_gui_app_paths() -> "list[Path]":
         return [Path("/Applications/Hermes.app"), home / "Applications" / "Hermes.app"]
     if sys.platform == "win32":
         local_base = _env_dir("LOCALAPPDATA", home / "AppData" / "Local")
-        # NSIS per-user install (perMachine=false), an older/alternate layout, NSIS per-machine (needs admin).
+        # NSIS per-user installs (perMachine=false) of each product, an older/alternate layout, NSIS per-machine
+        # (needs admin).
         program_files = os.environ.get("ProgramFiles")
-        return [local_base / "Programs" / "Hermes", local_base / "hermes-desktop"] + (
+        return [local_base / "Programs" / "Hermes", local_base / "Programs" / "HermesBundled",
+                local_base / "hermes-desktop"] + (
             [Path(program_files) / "Hermes"] if program_files else [])
     # Linux: an AppImage lives wherever the user put it and deb/rpm files belong to the package manager
     # (see the hint in ``uninstall_gui``), so only the desktop entry + hicolor icons are cleaned here.
