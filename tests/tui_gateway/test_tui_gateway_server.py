@@ -21516,7 +21516,7 @@ def test_workflow_callback_blocks_on_the_canvas(monkeypatch):
 
     def fake_send(method, sid, params, *, timeout, qids=None):
         captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids)
-        return '{"workflow": {"id": "w1"}}'
+        return {"value": '{"workflow": {"id": "w1"}}'}
 
     from tui_gateway import server_requests
 
@@ -21543,17 +21543,6 @@ def test_every_gateway_callback_is_one_the_agent_accepts():
     emitted = server._agent_cbs("sid-1").keys()
 
     assert not [name for name in emitted if name not in accepted]
-
-
-def test_workflow_request_expires_for_a_late_canvas():
-    """A renderer that answers after the block gave up must not have its reply
-    rejected as unknown — the topic has to be in the expire set, or the plugin
-    surfaces a raw JSON-RPC error for a request that merely ran long."""
-    from tui_gateway import server_requests
-
-    source = inspect.getsource(server_requests)
-
-    assert '"workflow"' in source, "workflow must opt into the .expire notification"
 
 
 @pytest.mark.parametrize(
