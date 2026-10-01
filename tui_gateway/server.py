@@ -1640,6 +1640,36 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         return {}
     overrides: dict = {}
     model = str(row.get("model") or model_config.get("model") or "").strip()
+    # Provenance stamp (written by _runtime_model_config): the config.yaml target this row was
+    # persisted against. Legacy rows without it keep the old restore behavior (#122016).
+    recorded_default = model_config.get("config_default")
+    current_target = _config_model_target()
+    superseded_default = isinstance(recorded_default, dict) and current_target != (
+        str(recorded_default.get("model") or "").strip(),
+        str(recorded_default.get("provider") or "").strip(),
+    )
+    if superseded_default and not composer_profile:
+        # config.yaml's explicit route changed after this row was persisted. A row that merely
+        # mirrored the recorded default is an inherited route, not a per-chat pick, so the explicit
+        # config wins and the stale route must not come back on resume. A route that diverged from
+        # the recorded default (an explicit pick) falls through and survives, like the composer
+        # marker above.
+        route_model, route_provider = model, str(model_config.get("provider") or "").strip()
+        if (route_model, route_provider) == (
+            str(recorded_default.get("model") or "").strip(),
+            str(recorded_default.get("provider") or "").strip(),
+        ):
+            logger.info(
+                "Dropping stale session route on resume: row mirrored config default %s, config now pins %s",
+                (route_model, route_provider), current_target,
+            )
+            reasoning_config = model_config.get("reasoning_config")
+            if isinstance(reasoning_config, dict):
+                overrides["reasoning_config_override"] = reasoning_config
+            service_tier = str(model_config.get("service_tier") or "").strip()
+            if service_tier:  # None = "inherit the profile" at _make_agent; "" = real override "no priority tier"
+                overrides["service_tier_override"] = "" if service_tier.lower() == "normal" else service_tier
+            return overrides  # no model_override / provider_override: config is authoritative
     # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
     # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
     from hermes_state import SessionDB
