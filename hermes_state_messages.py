@@ -62,10 +62,10 @@ _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND 
 # the in-transaction delete fence must refuse (not project) any session this probe still matches.
 _DISPLAY_INDEX_MISSING_SQL = ("SELECT 1 FROM messages WHERE session_id = ?" + _DISPLAY_ACTIVE_CLAUSE
                               + " AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
-# Read-modify-write seam (set_message_reaction) reads the raw BLOB: CAST defeats the connection's
-# tolerant text_factory so an undecodable cell fails AT THE SEAM instead of degrading to U+FFFD,
-# parsing away to {} and letting the write drop the row's unrelated metadata (#109465 review).
-_DISPLAY_META_ROW_BLOB_SQL = "SELECT CAST(display_metadata AS BLOB) FROM messages WHERE id = ? AND session_id = ?"
+# Read-modify-write seam (take_unseen_reactions) reads the raw BLOB: CAST defeats the
+# connection's tolerant text_factory so an undecodable cell fails AT THE SEAM instead of
+# degrading to U+FFFD, parsing away to {} and letting the write drop the row's unrelated
+# metadata (#109465 review).
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls, message_uid FROM messages "
                       "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
@@ -155,12 +155,7 @@ class SessionMessagesMixin:
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged. A BLOB-stored value decodes
-        to ``str`` (U+FFFD on undecodable bytes) so public message dicts stay JSON-serializable
-        regardless of which storage class a corrupt cell landed in (#109465 review: BLOB bytes
-        made ``json.dumps(message)`` raise TypeError)."""
-        if isinstance(content, bytes):
-            return tolerant_decode_bytes(content)
+        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
         if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
             return _json_or(content[len(cls._CONTENT_JSON_PREFIX):], content,
                 "Failed to decode JSON-encoded message content; returning raw string")
@@ -1466,13 +1461,6 @@ class SessionMessagesMixin:
         msg = dict(row)
         msg.pop("display_identity", None)
         msg.pop("display_order", None)
-        # display_identity (popped above) is the messages table's only legitimate BLOB column, so
-        # any surviving bytes is a corrupt cell that landed in BLOB storage and bypassed text_factory
-        # (sqlite3 contract). Normalize centrally: NO public read surface may hand out bytes, or
-        # json.dumps(message) raises TypeError on e.g. a BLOB-stored reasoning cell (#109465 review).
-        for key, value in msg.items():
-            if isinstance(value, bytes):
-                msg[key] = tolerant_decode_bytes(value)
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
         msg["content"] = self._decode_content(msg["content"])
@@ -1485,7 +1473,9 @@ class SessionMessagesMixin:
         # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
         # here, once, rather than needing a new named pop for each future binary column. Known
         # columns are exempt: popping `content` because a row holds bytes turns a decode problem
-        # into a KeyError for every msg["content"] reader downstream.
+        # into a KeyError for every msg["content"] reader downstream. (The tolerant text_factory
+        # from #109465 only covers TEXT storage; BLOB storage is governed by this main contract —
+        # unknown BLOB columns are dropped, schema columns keep their raw value.)
         for key, value in list(msg.items()):
             if key not in _MESSAGE_SCHEMA_KEYS and isinstance(value, (bytes, bytearray)):
                 msg.pop(key)

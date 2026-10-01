@@ -183,11 +183,17 @@ def test_corrupt_model_config_aborts_mutation_instead_of_rewriting(tmp_path):
 
 
 def test_blob_stored_cells_degrade_to_str_never_escape_as_bytes(tmp_path, caplog):
-    """BLOB storage bypasses text_factory by sqlite3 contract, but NO public read surface may
-    hand out bytes: a BLOB system_prompt/message-content decodes to str (U+FFFD on undecodable
-    bytes), so session dicts and message dicts stay JSON-serializable for BOTH storage classes
-    (#109465 review: bytes escaped the public session API and json.dumps(message) raised
-    TypeError)."""
+    """BLOB storage bypasses text_factory by sqlite3 contract, but the SESSION surfaces must never
+    hand out bytes: a BLOB system_prompt decodes to str (U+FFFD on undecodable bytes), so session
+    dicts stay JSON-serializable for BOTH storage classes (#109465 review: bytes escaped the
+    public session API and json.dumps(session) raised TypeError).
+
+    For MESSAGE columns main pins the opposite contract (#116510 /
+    TestUnknownBlobColumnSurvivesRead): a schema column holding BLOB keeps its raw bytes value
+    (dropping/decoding it turns a decode problem into a KeyError for msg["content"] readers),
+    and only unknown BLOB columns are dropped. So a BLOB-stored message content reads back as
+    bytes here — that is main's settled spec, not a leak.
+    """
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("bad", "cli", system_prompt="placeholder tail")
@@ -213,12 +219,11 @@ def test_blob_stored_cells_degrade_to_str_never_escape_as_bytes(tmp_path, caplog
             session = db.get_session("bad")
             messages = db.get_messages("bad")
 
-        # Both storage classes degrade identically: str with U+FFFD, never bytes.
+        # Session surface: both storage classes degrade identically — str with U+FFFD, never bytes.
         assert session["system_prompt"] == "You are Hermes \ufffd"
-        assert isinstance(messages[0]["content"], str)
-        assert messages[0]["content"] == "You are Hermes \ufffd"
-        # Stable serializable output contract: json.dumps works on every public dict.
-        assert json.dumps(session) and json.dumps(messages)
+        assert json.dumps(session)
+        # Message surface: main's contract keeps the raw bytes value in the schema column.
+        assert messages[0]["content"] == undecodable
         # The BLOB degrade path shares the content-free fingerprint warning with text_factory.
         fingerprint = hashlib.sha256(undecodable).hexdigest()[:16]
         warned = [r for r in caplog.records if "degraded to U+FFFD" in r.getMessage()]
@@ -429,10 +434,12 @@ def test_take_unseen_reactions_fails_closed_on_undecodable_metadata(tmp_path):
 
 
 def test_blob_stored_title_and_reasoning_stay_serializable(tmp_path):
-    """BLOB-stored sessions.title and messages.reasoning must degrade to str in the public
-    dicts too, not just system_prompt/content: json.dumps(get_session(...)) and
-    json.dumps(get_messages(...)) keep working for BOTH storage classes (#109465 review,
-    completeness gap 2)."""
+    """A BLOB-stored sessions.title must degrade to str in the public session dict, so
+    json.dumps(get_session(...)) keeps working for BOTH storage classes (#109465 review,
+    completeness gap 2). The messages table is the opposite: main's
+    TestUnknownBlobColumnSurvivesRead spec (#116510) keeps a schema column's raw bytes
+    value, so a BLOB-stored messages.reasoning reads back as bytes here — the listing
+    surface, which shares the session normalization boundary, stays serializable."""
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         db.create_session("s", "cli")
@@ -447,9 +454,9 @@ def test_blob_stored_title_and_reasoning_stay_serializable(tmp_path):
         session = db.get_session("s")
         messages = db.get_messages("s")
         assert session["title"] == "why so serious \ufffd"
-        assert messages[0]["reasoning"] == "why so serious \ufffd"
-        assert json.dumps(session) and json.dumps(messages)
-        # The listing surface shares the same normalization boundary.
+        assert messages[0]["reasoning"] == undecodable  # main's schema-column contract
+        assert json.dumps(session)
+        # The listing surface shares the same session normalization boundary.
         assert all(json.dumps(s) for s in db.list_recent_sessions_bounded())
     finally:
         db.close()
