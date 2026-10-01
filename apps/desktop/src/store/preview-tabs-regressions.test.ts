@@ -6,7 +6,8 @@ import {
   decodePreviewTabs,
   newBrowserTab,
   openPreview,
-  type PreviewTarget
+  type PreviewTarget,
+  rekeyPreviewTabsForSession
 } from './preview'
 import { $selectedStoredSessionId } from './session'
 
@@ -17,6 +18,10 @@ import { $selectedStoredSessionId } from './session'
 
 function urlTarget(source: string): PreviewTarget {
   return { kind: 'url', label: source, source, url: source }
+}
+
+function fileTarget(source: string): PreviewTarget {
+  return { kind: 'file', label: source, path: source, previewKind: 'html', source, url: `file://${source}` }
 }
 
 /** The single profile bucket the store persists, as written. */
@@ -97,5 +102,42 @@ describe('preview tabs regressions (#73890 re-land)', () => {
     // Minted ids survive verbatim — the pop-out hand-off depends on them.
     expect(restored.map(tab => tab.id)).toEqual(live.map(tab => tab.id))
     expect(restored.map(tab => tab.target.url)).toEqual(['https://a.example', 'https://b.example', 'https://c.example'])
+  })
+
+  // Regression 4: auto-compression mints a new stored session id; tabs owned
+  // by the old tip vanished from the drawer once the rail started naming the
+  // new tip. Ownership must follow the lineage rotation.
+  it('keeps a session tabs across a compression id rotation', () => {
+    $selectedStoredSessionId.set('tip-old')
+    openPreview(fileTarget('/work/report.html'))
+    newBrowserTab()
+    openPreview(urlTarget('https://b.example'))
+
+    // Pin another session's tab to prove the rotation leaves it alone.
+    $previewTabs.set([
+      ...$previewTabs.get(),
+      { id: 'file:/work/pinned.html', target: fileTarget('/work/pinned.html'), sessionId: 'other', pinned: true }
+    ])
+
+    // The rotation the compression edges publish (session-states rekeys the
+    // tile on exactly this pair).
+    rekeyPreviewTabsForSession('tip-old', 'tip-new')
+
+    // File id rekeys onto the new owner; the minted Browser id is kept
+    // verbatim; the other session's pinned row is untouched.
+    expect($previewTabs.get().map(tab => [tab.id, tab.sessionId, tab.pinned])).toEqual([
+      ['file:tip-new:/work/report.html', 'tip-new', undefined],
+      [expect.stringMatching(/^url:browser-/), 'tip-new', undefined],
+      ['file:/work/pinned.html', 'other', true]
+    ])
+
+    // The drawer survives the rotation end to end: rows written by the store
+    // come back through the real decoder owned by the new tip.
+    $selectedStoredSessionId.set('tip-new')
+    expect($visiblePreviewTabs.get()).toHaveLength(3)
+
+    const restored = decodePreviewTabs(JSON.stringify(persistedBucket()))
+    expect(restored).toHaveLength(3)
+    expect(restored.every(tab => tab.pinned || tab.sessionId === 'tip-new')).toBe(true)
   })
 })

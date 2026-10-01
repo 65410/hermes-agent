@@ -911,6 +911,54 @@ export function prunePreviewTabsForSession(sessionId: string): void {
   $previewTabs.set($previewTabs.get().filter(tab => tab.pinned || tab.sessionId !== sessionId))
 }
 
+/** Move tab ownership along a compression id rotation: tabs keyed on the old
+ *  tip belong to the SAME conversation under its new id, so without this they
+ *  vanish from the drawer the moment the rail starts naming the new tip.
+ *  File ids are rekeyed onto the new session (the id carries its owner);
+ *  minted Browser and artifact ids never change. The active selection
+ *  follows the rekeyed id so the strip never points at a hidden row. */
+export function rekeyPreviewTabsForSession(previousStoredSessionId: string, nextStoredSessionId: string): void {
+  if (!previousStoredSessionId || !nextStoredSessionId || previousStoredSessionId === nextStoredSessionId) {
+    return
+  }
+
+  const current = $previewTabs.get()
+
+  // Only rows owned by the exact old tip move: a rotation event names that
+  // tip itself, and rows owned by other sessions (or pinned ones) belong to
+  // conversations this rotation does not touch.
+  if (!current.some(tab => tab.sessionId === previousStoredSessionId && !tab.pinned)) {
+    return
+  }
+
+  const activeId = $rightRailActiveTabId.get()
+  let newActiveId = activeId
+
+  $previewTabs.set(
+    current.map(tab => {
+      if (tab.sessionId !== previousStoredSessionId || tab.pinned) {
+        return tab
+      }
+
+      const nextId = tab.target.kind === 'file' ? previewTabId(tab.target, nextStoredSessionId) : tab.id
+
+      if (tab.id === activeId) {
+        newActiveId = nextId
+      }
+
+      return { ...tab, id: nextId, sessionId: nextStoredSessionId }
+    })
+  )
+
+  // A rekey can collide with a row the new tip already owned (the same file
+  // open twice pre-rotation); the map above keeps the LAST one — the moved
+  // row — so the count can only shrink. Keep the selection pointing at a
+  // row that exists.
+  if (newActiveId !== activeId) {
+    selectRightRailTab(newActiveId)
+  }
+}
+
 export function closeRightRailTab(tabId: string) {
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === tabId)

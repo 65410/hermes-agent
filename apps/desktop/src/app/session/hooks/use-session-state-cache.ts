@@ -7,6 +7,7 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { migrateInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { rekeyPreviewTabsForSession } from '@/store/preview'
 import {
   $activeSessionId,
   $messages,
@@ -208,6 +209,11 @@ export function useSessionStateCache({
             // rekey, which this path can skip when the state updater is a no-op.
             if (storedSessionId) {
               rekeySessionTile(existing.storedSessionId, storedSessionId, sessionId)
+
+              // Preview tabs keyed on the old tip follow the same rotation,
+              // exactly as in handleTransition — this path can fire when the
+              // transition handler does not (a no-op state update).
+              rekeyPreviewTabsForSession(existing.storedSessionId, storedSessionId)
             }
 
             // A rotation event needs a real next id — a null/cleared stored id
