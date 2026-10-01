@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import threading
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -164,13 +165,29 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     return _ws_client_reason(ws) is None
 
 
+def _browser_loopback_origin(origin: str) -> bool:
+    """True for an http(s) origin whose host is loopback.
+
+    A browser cannot forge this for a cross-site request: the Origin is the
+    page's own host, so a DNS-rebinding page keeps the attacker's host. The
+    packaged Desktop renderer is served from one (``http://127.0.0.1:<port>``),
+    and that origin can never equal a remote bound host.
+    """
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    return parsed.hostname.lower() in {"127.0.0.1", "localhost", "::1"}
+
+
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     """Return ``host_mismatch …`` / ``origin_mismatch …``, or None when allowed.
 
     HTTP middleware does not run for WebSocket routes, so the DNS-rebinding
     Host check is repeated here; an Origin header, when present, must target the
-    bound host.  Non-web origins (packaged Electron: file://, null, app://) are
-    trusted — the credential check is the real auth boundary there.
+    bound host.  Non-web origins (packaged Electron: file://, null, app://) and
+    loopback http(s) origins (the packaged renderer, served from
+    ``http://127.0.0.1:<port>``) are trusted — a browser cannot forge either for
+    a cross-site request, and the credential check is the real auth boundary.
     """
     from hermes_cli.web_server import _is_accepted_host, app
     bound_host = getattr(app.state, "bound_host", None)
@@ -181,7 +198,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
     origin = ws.headers.get("origin", "")
-    if not origin:
+    if not origin or _browser_loopback_origin(origin):
         return None
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:

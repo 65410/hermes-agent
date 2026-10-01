@@ -486,6 +486,31 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="file://", host="100.64.0.10:9119")
         assert _web_server_chat._ws_host_origin_is_allowed(ws) is True
 
+    def test_packaged_loopback_renderer_origin_allowed_on_remote_bind(
+        self, insecure_explicit_host_app
+    ):
+        """A packaged Desktop served from the loopback renderer still connects
+        to a remote bind.
+
+        Since the renderer moved off file:// onto http://127.0.0.1:<port>, the
+        handshake carries that origin. A browser cannot forge a loopback origin
+        for a cross-site request (a DNS-rebinding page keeps the attacker's
+        host), and the credential check still runs first.
+        """
+        for origin in (
+            "http://127.0.0.1:47891",
+            "http://localhost:47891",
+            "http://[::1]:47891",
+        ):
+            ws = self._ws(origin=origin, host="100.64.0.10:9119")
+            assert _web_server_chat._ws_host_origin_is_allowed(ws) is True, origin
+
+    def test_non_loopback_http_origin_still_rejected_on_remote_bind(
+        self, insecure_explicit_host_app
+    ):
+        ws = self._ws(origin="http://evil.example", host="100.64.0.10:9119")
+        assert _web_server_chat._ws_host_origin_is_allowed(ws) is False
+
 
 
 
