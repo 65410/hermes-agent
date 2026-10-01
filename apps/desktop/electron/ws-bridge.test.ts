@@ -267,6 +267,89 @@ test('remote close during connect resolves open as failure and emits close', asy
   assert.equal(sender.sent.some(e => e.token === 'tok-e' && (e.payload as { type: string }).type === 'close'), true)
 })
 
+test('late callbacks from a canceled socket cannot touch a newer dial that reused the token', async () => {
+  const { handlers, ipc } = makeFakeIpc()
+  const { instances, FakeWs } = makeWsFactory()
+  const bridge = createWebSocketBridge({ ipc, webSocketImpl: FakeWs as never, connectTimeoutMs: 60_000 })
+  bridge.install()
+
+  const sender = makeSender('a')
+  // 1. Old dial opens under `reuse` and goes live.
+  const oldOpenP = handlers.get('hermes:ws-bridge:open')!({ sender }, 'wss://gw.example/api/ws', 'reuse') as Promise<{ ok: boolean }>
+  instances[0].simulateOpen()
+  assert.equal((await oldOpenP).ok, true)
+  await nextTick()
+
+  // 2. The renderer closes it; the token is now free again.
+  assert.deepEqual(handlers.get('hermes:ws-bridge:close')!({ sender }, 'reuse'), { ok: true })
+  assert.equal(bridge.sockets.size, 0)
+
+  // 3. A replacement dial immediately reuses the same token.
+  const newOpenP = handlers.get('hermes:ws-bridge:open')!({ sender }, 'wss://gw.example/api/ws', 'reuse') as Promise<{ ok: boolean; error?: string }>
+  assert.equal(bridge.pendingDials.size, 1)
+  assert.equal(instances[1].terminated, false)
+
+  // 4. Late close from the retired socket (post-close transport teardown).
+  instances[0].simulateClose(1006)
+  // The replacement dial must be untouched: not settled, not terminated, and
+  // the retired socket's close must not surface as an event either.
+  assert.equal(bridge.pendingDials.size, 1)
+  assert.equal(instances[1].terminated, false)
+  assert.equal(sender.sent.some(e => e.token === 'reuse' && (e.payload as { type: string }).type === 'close'), false)
+
+  // 5. The replacement opens normally and goes live.
+  instances[1].simulateOpen()
+  assert.deepEqual(await newOpenP, { ok: true })
+  assert.equal(bridge.sockets.size, 1)
+  assert.equal(bridge.sockets.get('reuse')?.ws, instances[1])
+  assert.deepEqual(handlers.get('hermes:ws-bridge:send')!({ sender }, 'reuse', 'ping', false), { ok: true })
+  assert.deepEqual(instances[1].sent, ['ping'])
+
+  // 6. A late open from the retired socket must not hijack the live entry.
+  instances[0].readyState = 1
+  instances[0].simulateOpen()
+  await nextTick()
+  assert.equal(bridge.sockets.get('reuse')?.ws, instances[1])
+  assert.equal(instances[0].terminated, true)
+})
+
+test('late close from a canceled PENDING dial cannot settle a newer dial that reused the token', async () => {
+  const { handlers, ipc } = makeFakeIpc()
+  const { instances, FakeWs } = makeWsFactory()
+  const bridge = createWebSocketBridge({ ipc, webSocketImpl: FakeWs as never, connectTimeoutMs: 60_000 })
+  bridge.install()
+
+  const sender = makeSender('a')
+  // Old dial stays pending; renderer cancels it (its own connect timeout).
+  const oldOpenP = handlers.get('hermes:ws-bridge:open')!({ sender }, 'wss://gw.example/api/ws', 'again') as Promise<{ ok: boolean; error?: string }>
+  assert.deepEqual(handlers.get('hermes:ws-bridge:cancel')!({ sender }, 'again'), { ok: true })
+  const oldResult = await oldOpenP
+  assert.equal(oldResult.ok, false)
+  assert.equal(instances[0].terminated, true)
+
+  // The canceled token is immediately reusable; a replacement dial takes it.
+  const newOpenP = handlers.get('hermes:ws-bridge:open')!({ sender }, 'wss://gw.example/api/ws', 'again') as Promise<{ ok: boolean; error?: string }>
+  assert.equal(bridge.pendingDials.size, 1)
+  assert.equal(instances[1].terminated, false)
+
+  // Late close(1006) from the retired socket: must NOT settle the new dial.
+  instances[0].simulateClose(1006)
+  assert.equal(bridge.pendingDials.size, 1)
+  assert.equal(instances[1].terminated, false)
+  // No close event was emitted to the renderer for the replacement either.
+  const closeEvents = sender.sent.filter(e => e.token === 'again' && (e.payload as { type: string }).type === 'close')
+  assert.equal(closeEvents.length, 0)
+
+  // The replacement still opens, stays live, and answers send.
+  instances[1].simulateOpen()
+  assert.deepEqual(await newOpenP, { ok: true })
+  await nextTick()
+  assert.equal(bridge.sockets.size, 1)
+  assert.equal(bridge.sockets.get('again')?.ws, instances[1])
+  assert.deepEqual(handlers.get('hermes:ws-bridge:send')!({ sender }, 'again', 'ping', false), { ok: true })
+  assert.deepEqual(instances[1].sent, ['ping'])
+})
+
 test('duplicate or empty tokens are refused', async () => {
   const { handlers, ipc } = makeFakeIpc()
   const { instances, FakeWs } = makeWsFactory()

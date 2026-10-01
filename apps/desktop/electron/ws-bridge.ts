@@ -96,6 +96,18 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
   // renderer that reconnects repeatedly must not accumulate listeners.
   const retiredSenders = new WeakSet<WebContents>()
 
+  /** True only while the maps still point THIS transport at the token. Once a
+   * dial is canceled/settled the token is immediately reusable, so a retired
+   * socket's late callbacks must be dropped, not applied to the replacement —
+   * otherwise a late close would finalize the new dial and a late open would
+   * promote the retired ws into the live map (token-reuse ABA). */
+  const ownsToken = (ws: WebSocketLike, token: string): boolean => {
+    const live = sockets.get(token)
+    if (live) return live.ws === ws
+    const dial = pendingDials.get(token)
+    return dial !== undefined && dial.ws === ws
+  }
+
   const sendTo = (sender: WebContents, token: string, payload: unknown) => {
     if (!sender.isDestroyed()) {
       sender.send(CHANNEL_EVENT, token, payload)
@@ -176,8 +188,10 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
       watchSender(sender)
 
       ws.on('open', () => {
-        if (!pendingDials.has(token)) {
-          // Already settled (cancel/timeout/teardown) — never promote.
+        if (!ownsToken(ws, token)) {
+          // Already settled (cancel/timeout/teardown) — never promote. Also
+          // covers token reuse: a retired ws may open after a newer dial
+          // took the token, and must not hijack the replacement.
           try { ws.terminate() } catch { /* already gone */ }
           return
         }
@@ -193,12 +207,18 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
         setImmediate(() => sendTo(sender, token, { type: 'open' }))
       })
       ws.on('message', (data: Buffer | string, isBinary: boolean) => {
+        if (!ownsToken(ws, token)) return
         sendTo(sender, token, { type: 'message', data: isBinary ? data.toString('base64') : String(data), binary: isBinary })
       })
       ws.on('error', (err: Error) => {
+        if (!ownsToken(ws, token)) return
         sendTo(sender, token, { type: 'error', message: err.message })
       })
       ws.on('close', (code: number, reason: Buffer) => {
+        // Identity, not just the token: after a cancel the token can be
+        // rebound to a newer dial, and this retired socket's late close must
+        // not finalize the replacement's dial or delete its live entry.
+        if (!ownsToken(ws, token)) return
         sockets.delete(token)
         sendTo(sender, token, { type: 'close', code, reason: reason.toString() })
         finalizeDial(token, { ok: false, error: `WebSocket closed during connect (code ${code})` })
