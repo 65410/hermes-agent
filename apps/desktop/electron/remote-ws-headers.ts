@@ -111,16 +111,57 @@ export function oauthLoginLoadUrlOptions(headers: Record<string, string> = {}): 
 
 export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rendererOrigin: () => string | undefined = () => undefined
 ) {
   // The YouTube embed Referer stamp composes onto this same listener: Electron
   // allows a single onBeforeSendHeaders listener per session, so the default
   // session (where chat embeds' iframes live) gets both behaviors here.
   sessionLike?.webRequest?.onBeforeSendHeaders?.(
     withEmbedRefererStamp((details, callback) => {
-      applyRemoteRequestHeaders(details, callback, headersForRequest)
+      applyRemoteRequestHeaders(details, callback, headersForRequest, rendererOrigin())
     })
   )
+}
+
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
+/**
+ * The packaged renderer used to load from file://, so every gateway WebSocket
+ * it dialed carried `Origin: file://`. It now loads from a loopback HTTP origin
+ * (for YouTube embeds), which a remote backend's Host/Origin guard rejects with
+ * 4403 unless it is new enough to trust loopback origins. Send remote
+ * WebSocket upgrades from the renderer the Origin it always sent, so a Desktop
+ * update never strands a backend that has not been updated yet.
+ */
+export function withLegacyRendererOrigin(
+  requestUrl: string,
+  headers: Record<string, string>,
+  rendererOrigin?: string
+): Record<string, string> {
+  if (!rendererOrigin) {
+    return headers
+  }
+
+  let target: URL
+
+  try {
+    target = new URL(requestUrl)
+  } catch {
+    return headers
+  }
+
+  if ((target.protocol !== 'ws:' && target.protocol !== 'wss:') || LOOPBACK_HOSTNAMES.has(target.hostname)) {
+    return headers
+  }
+
+  const originKey = Object.keys(headers).find(name => name.toLowerCase() === 'origin')
+
+  if (!originKey || headers[originKey] !== rendererOrigin) {
+    return headers
+  }
+
+  return { ...headers, [originKey]: 'file://' }
 }
 
 export function createRemoteWsHeaderStore(limit = 100) {
@@ -164,17 +205,16 @@ export function createRemoteWsHeaderStore(limit = 100) {
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
-  headersForRequest: (requestUrl: string) => Record<string, string>
+  headersForRequest: (requestUrl: string) => Record<string, string>,
+  rendererOrigin?: string
 ) {
   const headers = headersForRequest(details.url)
+  const base = details.requestHeaders ?? {}
+  const merged = Object.keys(headers).length > 0 ? { ...base, ...headers } : base
+  const requestHeaders = withLegacyRendererOrigin(details.url, merged, rendererOrigin)
 
-  if (Object.keys(headers).length === 0) {
-    callback({})
-
-    return
-  }
-
-  callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
+  // An empty result means "no changes"; requestHeaders replaces every header.
+  callback(requestHeaders === base ? {} : { requestHeaders })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {
