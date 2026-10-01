@@ -2,13 +2,13 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { pageOutranksRenderedTranscript } from '@/app/chat/rewind-generation'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
-import { pageOutranksRenderedTranscript } from '@/app/chat/rewind-generation'
 import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'

@@ -32,10 +32,10 @@ import {
 } from '@/store/session-states'
 import type { SessionResumeResult } from '@/types/hermes'
 
+import { pageOutranksRenderedTranscript } from '../../chat/rewind-generation'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
-import { pageOutranksRenderedTranscript } from '../../chat/rewind-generation'
 import type { useSessionActions } from '../../session/hooks/use-session-actions'
 import {
   chatMessageArraysEquivalent,

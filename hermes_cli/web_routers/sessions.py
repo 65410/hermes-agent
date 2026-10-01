@@ -709,8 +709,13 @@ async def get_session_messages(
         # page read at a HIGHER generation legitimately contains fewer
         # rows — the user removed them — and must not be "corrected" back
         # (#119819).
-        session_row = db.get_session(sid) or {}
-        rewind_generation = int(session_row.get("rewind_count") or 0)
+        # Guarded: this read path is also exercised against partial DB
+        # doubles that only implement the message reads; without the
+        # session row the page simply carries no generation and the client
+        # keeps its legacy retention behavior.
+        get_session = getattr(db, "get_session", None)
+        session_row = get_session(sid) if callable(get_session) else None
+        rewind_generation = int((session_row or {}).get("rewind_count") or 0) if isinstance(session_row, dict) else 0
         return sid, _limit, messages, rewind_generation
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)

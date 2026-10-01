@@ -485,14 +485,27 @@ export async function extendRefreshPageToOverlap(
  * rendered durable rows the page never covered instead of letting the graft
  * clobber them.
  *
+ * Not every omission is staleness. The comparison is against the page's
+ * COVERED row set — the backend rows the folded messages stand for — not
+ * against the merged messages' leading rowId. The hydration fold merges a
+ * tool-interleaved turn's rows (interim assistant, tool calls, tool
+ * results, final answer) into ONE message keyed on the turn's FIRST row id,
+ * so a page that legitimately folds rendered rows into fewer durable
+ * messages reports a lower leading id while still covering them all: it
+ * supersedes those rows (same-generation fold), it is not a stale page.
+ * A rendered row only survives retention when its row id is strictly
+ * GREATER than every backend row the page covered — the true high-water
+ * mark, derivable by expanding each message's `serverRowSpan` from its
+ * leading rowId.
+ *
  * The generation gate: a rewind (`/undo`, `/retry`, truncation) soft-deletes
- * rows and DROPS the high-water mark with no signal a row-count comparison can
- * distinguish from a stale page — the rendered tail is legitimately "newer than"
- * the refreshed page because the user removed it. The caller therefore only
- * treats a below-water page as stale when the transcript it would clobber was
- * read at the SAME rewind generation as the page (no undo happened in
- * between); after a rewind the page is the authority and the removed rows must
- * stay gone.
+ * rows and DROPS the high-water mark with no signal a row-count comparison
+ * can distinguish from a stale page — the rendered tail is legitimately
+ * "newer than" the refreshed page because the user removed it. The caller
+ * therefore only treats a below-water page as stale when the transcript it
+ * would clobber was read at the SAME rewind generation as the page (no undo
+ * happened in between); after a rewind the page is the authority and the
+ * removed rows must stay gone.
  */
 export function retainNewerRowsOverStalePage(
   merged: ChatMessage[],
@@ -503,8 +516,16 @@ export function retainNewerRowsOverStalePage(
     return merged
   }
 
-  const newestMergedRowId = merged.reduce((newest, message) => Math.max(newest, message.rowId ?? 0), 0)
-  const newestPreviousRowId = previous.reduce((newest, message) => Math.max(newest, message.rowId ?? 0), 0)
+  /** Highest backend row the page/graft covers — folded rows count fully. */
+  const coveredRowHighWater = (messages: ChatMessage[]): number =>
+    messages.reduce(
+      (newest, message) =>
+        message.rowId === undefined ? newest : Math.max(newest, message.rowId + (message.serverRowSpan ?? 1) - 1),
+      0
+    )
+
+  const newestMergedRowId = coveredRowHighWater(merged)
+  const newestPreviousRowId = coveredRowHighWater(previous)
 
   if (!newestMergedRowId || newestMergedRowId >= newestPreviousRowId) {
     return merged
@@ -514,8 +535,24 @@ export function retainNewerRowsOverStalePage(
     merged.map(message => message.rowId).filter((rowId): rowId is number => rowId !== undefined)
   )
 
+  // Rows the page superseded (its fold covers them) are not "newer rendered
+  // rows the page never covered" — a fold is not a stale page.
+  const mergedCoveredRows = new Set<number>()
+
+  for (const message of merged) {
+    if (message.rowId !== undefined) {
+      for (let row = message.rowId; row < message.rowId + (message.serverRowSpan ?? 1); row += 1) {
+        mergedCoveredRows.add(row)
+      }
+    }
+  }
+
   const missingNewerRows = previous.filter(
-    message => message.rowId !== undefined && message.rowId > newestMergedRowId && !mergedRowIds.has(message.rowId)
+    message =>
+      message.rowId !== undefined &&
+      message.rowId > newestMergedRowId &&
+      !mergedRowIds.has(message.rowId) &&
+      !mergedCoveredRows.has(message.rowId)
   )
 
   return missingNewerRows.length ? [...merged, ...missingNewerRows] : merged
