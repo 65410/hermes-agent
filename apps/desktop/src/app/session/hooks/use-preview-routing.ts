@@ -17,7 +17,7 @@ import {
   requestPreviewReload
 } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
+import { $focusedRuntimeId, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 type EventHandler = (event: GatewayEvent) => void
 
@@ -89,6 +89,12 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         const target = typeof url === 'string' ? url.trim() : ''
 
         if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
+          // #73890: the tab belongs to the session that ASKED — a tile's own
+          // stored id, resolved from the event's runtime id — not to whichever
+          // session holds focus when the event lands. Unresolvable (a fresh
+          // draft, an unknown runtime) mints unowned, global rows as before.
+          const owner = event.session_id ? storedSessionIdForRuntimeId(event.session_id) : null
+
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
             async resolved => {
               if (!resolved) {
@@ -102,7 +108,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
+              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached), owner)
             }
           )
         }

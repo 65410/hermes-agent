@@ -44,7 +44,13 @@ import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './c
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
-import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
+import {
+  dropPreviewTabsForProfile,
+  migratePreviewTabsForProfile,
+  rekeyPreviewTabOwners,
+  setPreviewScope,
+  setPreviewSessionScope
+} from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
@@ -816,6 +822,11 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // a background tile's conversation rotates too, and its pane would
     // otherwise keep the stale id forever (duplicate/differently-titled tabs).
     rekeySessionTile(previous.storedSessionId, next.storedSessionId, runtimeId)
+
+    // Preview tabs owned by the pre-rotation id keep their IDS but follow the
+    // rotation on the owner FIELD (#73890), so the drawer's tabs don't vanish
+    // from the conversation when compression mints the continuation id.
+    rekeyPreviewTabOwners(previous.storedSessionId, next.storedSessionId)
 
     clearSettled(previous.storedSessionId)
     setSessionStalled(previous.storedSessionId, false)
@@ -3075,6 +3086,44 @@ export const $focusedRuntimeId = computed(
     return primaryRuntime
   }
 )
+
+// --- Preview tab ownership (#73890) ----------------------------------------
+//
+// Preview tabs are owned by the STORED id of the session that opened them;
+// visibility is a computed filter on that field. `preview.ts` cannot import
+// back here (this module already imports it), so the context is PUSHED — the
+// same one-way contract `setPreviewScope` uses for the profile scope.
+
+/** The stored ids preview tabs may be visible for right now: every session
+ *  on screen (the primary selection plus each open tile) through its lineage
+ *  aliases, so a compression rotation the sessions list has not refreshed
+ *  yet cannot hide a conversation's own tabs. */
+function visiblePreviewSessions(): string[] {
+  const visible: string[] = []
+
+  for (const id of $openStoredSessionIds.get()) {
+    for (const alias of lineageAliases(id, $sessions.get())) {
+      if (!visible.includes(alias)) {
+        visible.push(alias)
+      }
+    }
+  }
+
+  return visible
+}
+
+/** Push the focused session (the default owner for a newly minted tab — a
+ *  tile's stored id when a tile holds focus, else the primary selection) and
+ *  the on-screen set into the preview store. */
+function syncPreviewSessionScope(): void {
+  setPreviewSessionScope($focusedStoredSessionId.get(), visiblePreviewSessions())
+}
+
+$activeSessionId.subscribe(syncPreviewSessionScope)
+$selectedStoredSessionId.subscribe(syncPreviewSessionScope)
+$focusedTreePaneId.listen(syncPreviewSessionScope)
+$sessionTiles.listen(syncPreviewSessionScope)
+syncPreviewSessionScope()
 
 /** The focused session's state slice (undefined while unresolved/unbound). */
 export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates], (runtimeId, states) =>
