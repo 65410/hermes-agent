@@ -135,17 +135,46 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
 }
 
 function parseTabList(parsed: unknown): PreviewTab[] {
-  return (
-    (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : [])
-      .map(tab =>
-        isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
-          ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
-          : tab
-      )
-      // Drop tombstoned file tabs (a previous session confirmed the file is
-      // gone). Keeping them would re-probe a known-dead path on every boot.
-      .filter(tab => !tab.target.missing)
+  const pdfUpgraded = (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : [])
+    .map(tab =>
+      isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+        ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+        : tab
+    )
+    // Drop tombstoned file tabs (a previous session confirmed the file is
+    // gone). Keeping them would re-probe a known-dead path on every boot.
+    .filter(tab => !tab.target.missing)
+
+  // Legacy rows (written before session scoping) have no owner and no way to
+  // recover one — keep them as workspace-pinned rather than dropping them or
+  // dumping every stale tab into one chat. Explicit `!== undefined` checks:
+  // a persisted `pinned: false` must not be re-pinned.
+  const owned = pdfUpgraded.map(tab =>
+    tab.sessionId !== undefined || tab.pinned !== undefined ? tab : { ...tab, pinned: true }
   )
+
+  // File tab identities are session-scoped: a row written before the scope
+  // existed (or by an id-collapsing legacy build) rekeys onto the canonical
+  // `file:<session>:<path>` form, deduping the same file persisted under both
+  // old and new ids. Browser (URL) rows keep their MINTED id verbatim: ids are
+  // never rekeyed (#119850), because the pop-out window hand-off looks tabs up
+  // by the persisted id, and reusing a navigated Browser depends on the id
+  // surviving restore. Keep only the LAST row per id — the most recently
+  // opened wins.
+  const lastUrl = owned.findLast(tab => tab.target.kind === 'url')
+  const deduped = new Map<string, PreviewTab>()
+
+  for (const tab of owned) {
+    if (tab.target.kind === 'url' && tab !== lastUrl) {
+      continue
+    }
+
+    const id = tab.target.kind === 'file' ? previewTabId(tab.target, tab.sessionId) : tab.id
+
+    deduped.set(id, tab.target.kind === 'file' ? { ...tab, id } : tab)
+  }
+
+  return [...deduped.values()]
 }
 
 /** The tabs a profile's rail is showing, keyed by profile. */
