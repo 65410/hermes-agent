@@ -213,3 +213,36 @@ describe('OAuth login and registry extra headers', () => {
     })
   })
 })
+
+describe('legacy renderer origin on remote WebSocket upgrades', () => {
+  const renderer = 'http://127.0.0.1:47891'
+
+  function dial(url: string, origin: string, headers: Record<string, string> = {}) {
+    const listeners = []
+    attachRemoteRequestHeaderListener(
+      { webRequest: { onBeforeSendHeaders: listener => listeners.push(listener) } },
+      () => headers,
+      () => renderer
+    )
+    const callback = vi.fn()
+    listeners[0]({ url, requestHeaders: { Origin: origin, 'Sec-WebSocket-Version': '13' } }, callback)
+
+    return callback.mock.calls[0][0]
+  }
+
+  it('sends the file:// origin older remote backends accept', () => {
+    expect(dial('ws://100.64.0.1:9119/api/ws?ticket=t', renderer)).toEqual({
+      requestHeaders: { Origin: 'file://', 'Sec-WebSocket-Version': '13' }
+    })
+    expect(dial('wss://agent.example.internal/api/ws', renderer, accessHeaders)).toEqual({
+      requestHeaders: { Origin: 'file://', 'Sec-WebSocket-Version': '13', ...accessHeaders }
+    })
+  })
+
+  it('leaves local backends, other origins and non-WebSocket requests alone', () => {
+    expect(dial('ws://127.0.0.1:9119/api/ws', renderer)).toEqual({})
+    expect(dial('ws://[::1]:9119/api/ws', renderer)).toEqual({})
+    expect(dial('ws://100.64.0.1:9119/api/ws', 'https://www.youtube.com')).toEqual({})
+    expect(dial('http://100.64.0.1:9119/api/status', renderer)).toEqual({})
+  })
+})
