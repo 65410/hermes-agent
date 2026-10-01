@@ -289,6 +289,14 @@ function NodeMeta({ rt, config, elapsed }: { rt: StepRuntime; config: StepConfig
       })
     }
 
+    if (config.pin) {
+      items.push({ label: 'pinned', title: 'Answers with its frozen output; nothing runs' })
+    }
+
+    if (config.join === 'any') {
+      items.push({ label: 'first input', title: 'Starts on the first input to arrive' })
+    }
+
     if (config.assignee) {
       items.push({ label: config.assignee, title: 'The run parks on them' })
     }

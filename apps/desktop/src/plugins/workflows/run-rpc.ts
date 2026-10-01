@@ -9,7 +9,7 @@ import { host } from '@hermes/plugin-sdk'
 
 import { $workflows } from './documents'
 import type { RunPlan } from './graph'
-import type { ProtoEvent } from './protocol'
+import type { RelayEvent } from './relay-run'
 
 /** Statuses in which the gateway still owns the run — anything else is over. */
 export const LIVE: ReadonlySet<string> = new Set(['running', 'paused', 'waiting_human', 'waiting_world'])
@@ -22,15 +22,22 @@ export const startRun = (plan: RunPlan, source: 'manual' | 'webhook', payload?: 
     workflowId: plan.id
   })
 
-/** The whole log so far — the one-shot catch-up before the bus takes over. */
-export const runEvents = (runId: string) =>
-  host.request<{ events?: ProtoEvent[] }>('workflow.run.events', { after: -1, runId })
+export interface RunReply {
+  /** The Relay trace recorded so far — the run's whole history. */
+  events?: RelayEvent[]
+  /** Null while the start is still queued for the workflow reactor. */
+  run?: { status: string } | null
+  runId?: string
+  /** False when traces are off: the run still runs, it just leaves no history. */
+  recording?: boolean
+}
+
+/** The trace so far. The live `workflow.run` stream follows it when the run is in this process;
+ *  when another Hermes process runs it (the gateway holds the reactor), this is what polls. */
+export const runEvents = (runId: string) => host.request<RunReply>('workflow.run.events', { runId })
 
 /** A run this workflow left going, from a previous mount or another surface. */
-export const activeRun = (workflowId: string) =>
-  host.request<{ events?: ProtoEvent[]; run?: { status: string }; runId?: string }>('workflow.run.active', {
-    workflowId
-  })
+export const activeRun = (workflowId: string) => host.request<RunReply>('workflow.run.active', { workflowId })
 
 export const cancelRun = (runId: string) => host.request('workflow.run.cancel', { runId })
 

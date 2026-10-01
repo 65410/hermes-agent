@@ -1,9 +1,9 @@
 """Workflow store + run contracts (``tui_gateway/methods_workflow.py``).
 
-The stored documents and the run-event payloads are owned by the Workflows plugin
-(``apps/desktop/src/plugins/workflows``) and the runner (``workflow/runner.py``);
-the event vocabulary is the engine's (see the plugin's ``protocol.ts``). The
-gateway only carries them, so those shapes stay open here.
+The stored documents are owned by the Workflows plugin (``apps/desktop/src/plugins/workflows``)
+and the run state by the runner (``workflow/runner.py``). A run's history is its NeMo Relay trace:
+the events are Relay's own ATOF records (``hermes.workflow.*`` marks for what the runner decided,
+the child sessions' spans for what its agents did), so those shapes stay open here.
 """
 
 from __future__ import annotations
@@ -35,10 +35,6 @@ class RunIdParams(Params):
     runId: str = Field(min_length=1)
 
 
-class WorkflowRunEventsParams(RunIdParams):
-    after: int = -1
-
-
 class WorkflowRunRespondParams(RunIdParams):
     nodeId: str = Field(min_length=1)
     decision: str
@@ -67,6 +63,9 @@ class RunStateResult(OpenModel):
 
 
 class WorkflowStartedResult(Result):
+    """``status`` is ``queued`` until the reactor picks the start up (or the live run's, when Play
+    adopted one already going)."""
+
     runId: str
     status: str | None = None
 
@@ -75,16 +74,18 @@ class WorkflowRunEventsResult(Result):
     run: JsonValue | None = None
     events: list[JsonValue] = Field(default_factory=list)
     runId: str | None = None
+    recording: bool = True
 
 
 class WorkflowRunActiveResult(Result):
     run: JsonValue | None = None
     events: list[JsonValue] = Field(default_factory=list)
     runId: str | None = None
+    recording: bool = True
 
 
 class WorkflowRunEventResult(Result):
-    started: list[str] = Field(default_factory=list)
+    id: str
 
 
 method("workflow.store.list", params=Params, result=DocumentsResult,
@@ -94,15 +95,15 @@ method("workflow.store.put", params=WorkflowDocsPutParams, result=DocumentsResul
 method("workflow.store.remove", params=WorkflowIdParams, result=DocumentsResult,
        doc="Delete one workflow document and return the remainder.")
 method("workflow.run.start", params=WorkflowStartParams, result=WorkflowStartedResult,
-       doc="Start a gateway run of a stored workflow graph.")
-method("workflow.run.events", params=WorkflowRunEventsParams, result=WorkflowRunEventsResult,
-       doc="One run's state and the events after a sequence number (runId 404s when unknown).")
+       doc="Publish a start for a stored workflow graph; the workflow reactor runs it.")
+method("workflow.run.events", params=RunIdParams, result=WorkflowRunEventsResult,
+       doc="One run's state and its recorded Relay events (null run while a start is still queued).")
 method("workflow.run.active", params=WorkflowIdParams, result=WorkflowRunActiveResult,
-       doc="The workflow's newest run and its events (null run when none).")
+       doc="The workflow's newest live run and its recorded Relay events (null run when none).")
 method("workflow.run.respond", params=WorkflowRunRespondParams, result=RunStateResult,
        doc="Answer a run's parked human-approval step (approved / denied).")
 method("workflow.run.event", params=WorkflowRunEventParams, result=WorkflowRunEventResult,
-       doc="Emit a named event that parked wait/gate steps may be waiting for.")
+       doc="Publish a named event for whatever workflow listens: event triggers and parked waits.")
 method("workflow.run.pause", params=RunIdParams, result=RunStateResult,
        doc="Request a pause: the loop stops at the next step boundary.")
 method("workflow.run.resume", params=RunIdParams, result=RunStateResult,
@@ -112,15 +113,11 @@ method("workflow.run.cancel", params=RunIdParams, result=RunStateResult,
 
 
 class WorkflowRunEventPayload(Payload):
-    """One run-event log line (``workflow/store.py::append_event``); ``payload`` is the
-    engine's (see the plugin's ``protocol.ts`` — NodeStarted, RunFinished, …)."""
+    """One Relay event just recorded under a workflow run's session (``event`` is the ATOF record)."""
 
     runId: str
-    seq: int
-    ts: int
-    type: str
-    payload: dict[str, JsonValue] = Field(default_factory=dict)
+    event: JsonValue
 
 
 event("workflow.run", WorkflowRunEventPayload,
-      doc="A workflow run's event log, folded live by the Workflows canvas.")
+      doc="A workflow run's Relay trace as it is recorded, folded live by the Workflows canvas.")

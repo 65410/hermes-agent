@@ -1,118 +1,130 @@
-"""Steps that stop: a human who has to answer, and a wait that has to elapse.
+"""Steps that stop: a person who has to answer, and a wait the world has to end.
 
-A park is durable on purpose — closing the app must not lose a run that is
-sitting on an approval, so the state file records what it is waiting for and
-one of the resume doors below picks it up again: ``respond`` for a human,
-``resolve_event`` for the bus, and the two ticks here for a clock or a URL.
+A park belongs to its step, not to the run: a run can have an approval out, a timer counting and a
+branch still working, all at once. Parks are durable on purpose — closing the app must not lose a
+run that is sitting on an approval — so the state file records each one, and whatever ends it
+(an answer, an event, a timer, a URL that came up) is mail to the run (``runtime.post``).
 
-The ticks are also the boot path. A timer thread does not survive a restart, so
-``rearm_parked`` re-arms what it finds and the ticks sweep anything already due.
+An approval is an event too. Parking a person publishes ``workflow.approval.requested`` with a
+short code, sends the question to the step's ``notify`` targets, and accepts the answer from
+anywhere: the canvas, ``hermes workflow approve <code>``, ``/workflow approve <code>`` in a chat.
+
+Timers and polls are threads, and threads do not survive a restart: ``rearm_all`` re-arms whatever
+the state files say is parked (a clock already past due fires at once).
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
+import threading
 import time
+from typing import Any
 
-from workflow.runtime import arm, emit, lock_for, spawn
-from workflow.store import list_runs, load_run, save_run
-from workflow.topology import config_of, parse_poll, parse_wait_seconds, succs, title_of
+from workflow.runtime import arm, emit, post
+from workflow.store import list_runs, load_run
+from workflow.topology import config_of, parse_poll, parse_wait_seconds, title_of
 
 logger = logging.getLogger(__name__)
 
 
-def park_human(state: dict, step: dict, iteration: int) -> None:
+def notify_targets(cfg: dict) -> list[str]:
+    raw = cfg.get("notify")
+    items = raw if isinstance(raw, list) else str(raw or "").split(",")
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _send(targets: list[str], text: str) -> None:
+    from agent.memory_provider import spawn_context_thread
+    from tools.send_message_tool import send_message_tool
+
+    def work() -> None:
+        for target in targets:
+            try:
+                send_message_tool({"action": "send", "target": target, "message": text})
+            except Exception:
+                logger.warning("workflow approval notice to %s failed", target, exc_info=True)
+
+    spawn_context_thread(work, name="workflow-approval-notice").start()
+
+
+def approval_text(state: dict, park: dict) -> str:
+    return (
+        f"Workflow \u201c{state.get('name') or state.get('workflowId')}\u201d is waiting on you:\n"
+        f"{park['prompt']}\n\n"
+        f"Reply /workflow approve {park['code']} or /workflow deny {park['code']}"
+    )
+
+
+def park_human(state: dict, step: dict, iteration: int) -> dict:
+    from workflow import events
+
     cfg = config_of(step)
-    who = str(cfg.get("assignee") or "you").strip() or "you"
-    prompt = str(cfg.get("goal") or "").strip() or f"{title_of(step)} — approve?"
-    payload = {
+    park = {
+        "kind": "human",
         "nodeId": step["id"],
         "iteration": iteration,
-        "prompt": prompt,
-        "who": who,
+        "prompt": str(cfg.get("goal") or "").strip() or f"{title_of(step)} \u2014 approve?",
+        "who": str(cfg.get("assignee") or "you").strip() or "you",
         "onFail": cfg.get("onFail") or "halt",
+        "code": secrets.token_hex(3),
     }
-    emit(state, "HumanWaiting", payload)
-    state["status"] = "waiting_human"
-    state["park"] = {"kind": "human", **payload}
+    state.setdefault("parks", {})[step["id"]] = park
+    emit(state, "HumanWaiting", {k: park[k] for k in ("nodeId", "iteration", "prompt", "who", "onFail", "code")})
+    events.publish_if_wanted(
+        events.APPROVAL_REQUESTED,
+        {"workflowId": state["workflowId"], "runId": state["runId"], **{k: park[k] for k in ("nodeId", "prompt", "code")}},
+        source="workflow",
+    )
+    targets = notify_targets(cfg)
+    if targets:
+        _send(targets, approval_text(state, park))
+    return park
 
 
-def park_wait(state: dict, step: dict, iteration: int) -> bool:
-    """True when the run actually parked. A zero-length timer resolves on the
-    spot and the loop carries straight on."""
+def park_wait(state: dict, step: dict, iteration: int) -> dict | None:
+    """Park the step, or None when the wait is already over (a zero-length timer)."""
     until = config_of(step).get("until") or {"type": "timer", "spec": ""}
     kind = str(until.get("type") or "timer")
     spec = str(until.get("spec") or "").strip()
     label = spec or kind
-    emit(
-        state,
-        "WaitStarted",
-        {"nodeId": step["id"], "iteration": iteration, "until": f"{kind} · {label}", "label": label},
-    )
-    if kind == "poll":
-        parsed = parse_poll(spec)
-        if parsed is not None:
-            seconds, url = parsed
-            state["status"] = "waiting_world"
-            state["park"] = {
-                "kind": "wait",
-                "nodeId": step["id"],
-                "iteration": iteration,
-                "until": "poll",
-                "url": url,
-                "interval": seconds,
-                "by": "poll matched",
-            }
-            arm_poll(state["runId"], seconds, url)
-            return True
-        # A bare name is still a bus park — something else has to tell us.
-        state["status"] = "waiting_world"
-        state["waitingEvent"] = spec or kind
-        state["park"] = {
-            "kind": "wait",
-            "nodeId": step["id"],
-            "iteration": iteration,
-            "until": kind,
-            "by": "event received",
-        }
-        return True
-    if kind != "timer":
-        state["status"] = "waiting_world"
-        state["waitingEvent"] = spec or kind
-        state["park"] = {
-            "kind": "wait",
-            "nodeId": step["id"],
-            "iteration": iteration,
-            "until": kind,
-            "by": "event received",
-        }
-        return True
-    seconds = parse_wait_seconds(spec)
-    if seconds is None:
-        seconds = 0
-    if seconds <= 0:
-        finish_wait(state, step["id"], iteration, "elapsed")
-        return False
-    state["status"] = "waiting_world"
-    state["wakeAt"] = time.time() + seconds
-    state["park"] = {"kind": "wait", "nodeId": step["id"], "iteration": iteration, "until": kind, "by": "elapsed"}
-    arm_timer(state["runId"], seconds)
-    return True
+    emit(state, "WaitStarted", {"nodeId": step["id"], "iteration": iteration, "until": f"{kind} \u00b7 {label}", "label": label})
+    park: dict[str, Any] = {"kind": "wait", "nodeId": step["id"], "iteration": iteration}
+    poll = parse_poll(spec) if kind == "poll" else None
+    if poll is not None:
+        park.update(until="poll", url=poll[1], interval=poll[0], by="poll matched")
+    elif kind != "timer":
+        # A named event (or a poll spec that names one): something else has to tell us.
+        park.update(until="event", event=spec or kind, by="event received")
+    else:
+        seconds = parse_wait_seconds(spec) or 0
+        if seconds <= 0:
+            return None
+        park.update(until="timer", wakeAt=time.time() + seconds, by="elapsed")
+    state.setdefault("parks", {})[step["id"]] = park
+    arm_park(state["runId"], park)
+    return park
 
 
-def finish_wait(state: dict, node_id: str, iteration: int, by: str) -> None:
-    emit(state, "WaitResolved", {"nodeId": node_id, "iteration": iteration, "by": by})
-    state["ran"].append(node_id)
-    state["take"][node_id] = iteration + 1
-    state["verdicts"][node_id] = None
-    state["park"] = None
-    state["wakeAt"] = None
-    state["waitingEvent"] = None
-    state["status"] = "running"
+def arm_park(run_id: str, park: dict) -> None:
+    if park.get("until") == "timer":
+        arm_timer(run_id, park["nodeId"], max(0.0, float(park.get("wakeAt") or 0) - time.time()))
+    elif park.get("until") == "poll":
+        arm_poll(run_id, park["nodeId"], float(park.get("interval") or 60), str(park.get("url") or ""))
 
 
-def arm_timer(run_id: str, seconds: float) -> None:
-    arm(run_id, f"workflow-timer-{run_id}", seconds, lambda: tick_timers(run_id=run_id))
+def _still_parked(run_id: str, node_id: str) -> dict | None:
+    live = load_run(run_id) or {}
+    return (live.get("parks") or {}).get(node_id)
+
+
+def arm_timer(run_id: str, node_id: str, seconds: float) -> None:
+    def fire() -> None:
+        park = _still_parked(run_id, node_id)
+        if park is not None and park.get("until") == "timer":
+            post(run_id, {"kind": "resolve", "nodeId": node_id, "by": park.get("by") or "elapsed"})
+
+    arm(f"workflow-timer-{run_id}-{node_id}", seconds, fire)
 
 
 def http_ok(url: str) -> bool:
@@ -133,81 +145,49 @@ def http_ok(url: str) -> bool:
         return False
 
 
-def arm_poll(run_id: str, seconds: float, url: str) -> None:
+def arm_poll(run_id: str, node_id: str, seconds: float, url: str) -> None:
     def fire() -> None:
+        park = _still_parked(run_id, node_id)
+        # A resumed or cancelled run stops the polling with it.
+        if park is None or park.get("url") != url:
+            return
         if http_ok(url):
-            tick_polls(run_id=run_id)
+            post(run_id, {"kind": "resolve", "nodeId": node_id, "by": "poll matched"})
+        else:
+            arm_poll(run_id, node_id, float(park.get("interval") or seconds), url)
+
+    arm(f"workflow-poll-{run_id}-{node_id}", max(1.0, seconds), fire)
+
+
+def parked_runs() -> list[tuple[dict, dict]]:
+    """Every (run, park) on disk, newest run first."""
+    out = []
+    for state in sorted(list_runs(), key=lambda r: r.get("startedAt") or 0, reverse=True):
+        for park in (state.get("parks") or {}).values():
+            out.append((state, park))
+    return out
+
+
+def find_approval(code: str) -> tuple[dict, dict] | None:
+    needle = str(code or "").strip().lower()
+    for state, park in parked_runs():
+        if park.get("kind") == "human" and str(park.get("code") or "").lower() == needle:
+            return state, park
+    return None
+
+
+_rearmed: set[str] = set()
+_rearm_lock = threading.Lock()
+
+
+def rearm_all() -> None:
+    """After a restart: re-arm every parked clock in this home, once per process."""
+    from hermes_constants import get_hermes_home
+
+    key = str(get_hermes_home())
+    with _rearm_lock:
+        if key in _rearmed:
             return
-        # Still not up. Re-arm only while the run is genuinely still parked on
-        # this URL, so a resumed or cancelled run stops the polling with it.
-        live = load_run(run_id)
-        park = (live or {}).get("park") or {}
-        if live and live.get("status") == "waiting_world" and park.get("url") == url:
-            arm_poll(run_id, float(park.get("interval") or seconds), url)
-
-    arm(f"poll:{run_id}", f"workflow-poll-{run_id}", max(1.0, seconds), fire)
-
-
-def _resume(state: dict, park: dict, by: str) -> None:
-    """Finish the park under the run's lock and queue what comes next."""
-    with lock_for(state["runId"]):
-        live = load_run(state["runId"])
-        if live is None or live.get("status") != "waiting_world":
-            return
-        node_id = park["nodeId"]
-        finish_wait(live, node_id, int(park.get("iteration") or 0), by)
-        for nxt in succs(live["scenario"], node_id):
-            if nxt not in live["queue"]:
-                live["queue"].append(nxt)
-        save_run(live)
-    spawn(state["runId"])
-
-
-def tick_polls(run_id: str | None = None) -> list[str]:
-    """Resume poll parks whose URL now answers. Called on a poll thread and at boot."""
-    resumed: list[str] = []
-    for state in [load_run(run_id)] if run_id else list_runs():
-        if not state or state.get("status") != "waiting_world":
-            continue
-        park = state.get("park") or {}
-        if park.get("until") != "poll" or not park.get("url"):
-            continue
-        if not http_ok(park["url"]):
-            continue
-        _resume(state, park, "poll matched")
-        resumed.append(state["runId"])
-    return resumed
-
-
-def tick_timers(run_id: str | None = None) -> list[str]:
-    """Resume timer parks whose wake time has passed. Called on a timer thread and at boot."""
-    now = time.time()
-    resumed: list[str] = []
-    for state in [load_run(run_id)] if run_id else list_runs():
-        if not state or state.get("status") != "waiting_world":
-            continue
-        wake = state.get("wakeAt")
-        if wake is None or float(wake) > now:
-            continue
-        park = state.get("park") or {}
-        if park.get("kind") != "wait":
-            continue
-        _resume(state, park, park.get("by") or "elapsed")
-        resumed.append(state["runId"])
-    return resumed
-
-
-def rearm(state: dict) -> None:
-    """Re-arm one parked run's clock after a restart — the thread that was
-    counting it down died with the previous process."""
-    park = state.get("park") or {}
-    if park.get("until") == "poll" and park.get("url"):
-        if not http_ok(park["url"]):
-            arm_poll(state["runId"], float(park.get("interval") or 60), park["url"])
-        return
-    wake = state.get("wakeAt")
-    if wake is None:
-        return
-    remaining = float(wake) - time.time()
-    if remaining > 0:
-        arm_timer(state["runId"], remaining)
+        _rearmed.add(key)
+    for state, park in parked_runs():
+        arm_park(state["runId"], park)

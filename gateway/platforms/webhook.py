@@ -624,15 +624,21 @@ class WebhookAdapter(BasePlatformAdapter):
         # rather than falling through to the generic agent dispatch.
         workflow_route = _is_workflow_route(route_name, route_config)
 
+        # Workflows are event-driven: the hook publishes, and the workflow reactor (in whichever
+        # Hermes process holds it) starts the run. The run id is minted here so the caller can
+        # follow it.
         workflow_id = str(route_config.get("workflow") or "").strip()
         if workflow_id:
             try:
-                from workflow.runner import start_matching, start_run
+                from workflow import events as workflow_events
+                from workflow.store import new_run_id
 
-                state = start_run(workflow_id, payload=payload, source="webhook")
-                start_matching(event=str(event_type or ""), payload=payload, source="webhook")
-                return web.json_response({"status": "started", "workflow": workflow_id,
-                                          "run_id": state.get("runId")})
+                run_id = new_run_id()
+                workflow_events.publish(workflow_events.START, {
+                    "workflowId": workflow_id, "runId": run_id, "payload": payload, "source": "webhook",
+                    "trigger": str(route_config.get("trigger") or "") or None,
+                }, source="webhook")
+                return web.json_response({"status": "started", "workflow": workflow_id, "run_id": run_id})
             except Exception as exc:
                 logger.error("[webhook] workflow start failed route=%s: %s", route_name, exc)
                 return web.json_response({"error": f"Failed to start workflow: {exc}"}, status=500)
@@ -646,12 +652,10 @@ class WebhookAdapter(BasePlatformAdapter):
         workflow_event = str(route_config.get("workflow_event") or "").strip()
         if workflow_event:
             try:
-                from workflow.runner import start_matching
+                from workflow import events as workflow_events
 
-                started = start_matching(event=workflow_event, payload=payload, source="webhook")
-                return web.json_response({"status": "started" if started else "ok",
-                                          "event": workflow_event,
-                                          "runs": [s.get("runId") for s in started]})
+                queued = workflow_events.publish(workflow_event, payload, source="webhook")
+                return web.json_response({"status": "queued", "event": workflow_event, "id": queued["id"]})
             except Exception as exc:
                 logger.error("[webhook] workflow event failed route=%s: %s", route_name, exc)
                 return web.json_response({"error": f"Failed to emit workflow event: {exc}"}, status=500)

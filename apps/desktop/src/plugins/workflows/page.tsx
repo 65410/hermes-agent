@@ -566,6 +566,12 @@ function Flow({ doc }: { doc: WorkflowDoc }) {
             transport, and the composer itself below it. Same fill, same glass,
             same seam — this reads as the app's input, because it is. */}
                     <Panel className="run-panel" position="bottom-center">
+                      {player.running && !player.recording && (
+                        <div className="run-note" role="status">
+                          <Codicon name="info" />
+                          Running without a history — turn on telemetry.traces to watch it here.
+                        </div>
+                      )}
                       {player.asking && player.deferred && (
                         <button className="ask-back" onClick={player.reveal}>
                           <Codicon name="bell" />

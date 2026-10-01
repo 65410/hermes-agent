@@ -19,6 +19,7 @@ export function AskDialog({
   who,
   prompt,
   onFail,
+  code,
   open,
   onDefer,
   onRespond
@@ -39,6 +40,11 @@ export function AskDialog({
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <p className="text-xs leading-5 text-(--ui-text-secondary)">{prompt}</p>
+        {code && (
+          <p className="text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
+            Or answer from any chat with <code className="text-(--ui-text-secondary)">/workflow approve {code}</code>
+          </p>
+        )}
         <DialogFooter>
           <Button onClick={() => onRespond('denied')} size="sm" variant="secondary">
             {onFail === 'retry' ? 'Send back' : 'Deny'}

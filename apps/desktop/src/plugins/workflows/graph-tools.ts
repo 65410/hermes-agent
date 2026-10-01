@@ -97,13 +97,43 @@ const configSchema = {
     },
     on: {
       type: 'object',
-      description: 'Trigger steps: what starts a run.',
+      description: 'Trigger steps: what starts a run. A workflow may have several triggers.',
       properties: {
         type: { type: 'string', enum: ['manual', 'cron', 'webhook', 'event'] },
-        spec: { type: 'string', description: "e.g. 'every 2h', 'github.pull_request.merged'." }
+        spec: {
+          type: 'string',
+          description:
+            "e.g. 'every 2h', or an event name/glob: 'github.pull_request.*', 'hermes.session.ended', 'workflow.run.finished'."
+        }
       },
       required: ['type']
-    }
+    },
+    join: {
+      type: 'string',
+      enum: ['all', 'any'],
+      description: "A step with several inputs: wait for all of them (default) or start on the first ('any')."
+    },
+    notify: {
+      type: 'array',
+      items: { type: 'string' },
+      description: "Human steps: chats also asked (send_message targets, e.g. 'telegram', 'discord:#ops')."
+    },
+    toolsets: {
+      type: 'array',
+      items: { type: 'string' },
+      description: "Agent steps: the toolsets this step may use, e.g. ['web', 'file']. Empty is the profile's set."
+    },
+    pin: {
+      type: 'object',
+      description: 'Agent steps: freeze an output; the step answers with it and does not run. Send null to unpin.',
+      properties: {
+        summary: { type: 'string' },
+        verdict: { type: 'string', enum: ['PASS', 'FAIL'] },
+        output: { type: 'object' }
+      },
+      required: ['summary', 'output']
+    },
+    pinPayload: { type: 'object', description: 'Trigger steps: the payload a run started by hand uses.' }
   }
 } as const
 

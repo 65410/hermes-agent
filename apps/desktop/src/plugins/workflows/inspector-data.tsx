@@ -1,13 +1,14 @@
 /**
- * The step as run. Read-only throughout: everything here comes off the
- * runtime the event reducer built, so a scrubbed timeline shows the step as it
- * was at that point rather than as it ended.
+ * The step as run. Read-only, but for one thing: an output can be pinned, so
+ * the step answers with it on the next run instead of running. Everything else
+ * comes off the runtime the event reducer built, so a scrubbed timeline shows
+ * the step as it was at that point rather than as it ended.
  */
 
-import { cn, SidePanelMeta, SidePanelMetaRow, SidePanelSection } from '@hermes/plugin-sdk'
+import { Button, cn, SidePanelMeta, SidePanelMetaRow, SidePanelSection } from '@hermes/plugin-sdk'
 
 import type { StepRuntime } from './protocol'
-import type { StepKind } from './scenario'
+import { hasField, type StepConfig, type StepKind } from './scenario'
 
 const TODO_MARK: Record<string, string> = {
   cancelled: '[~]',
@@ -42,7 +43,62 @@ function Count({ n }: { n: number | string }) {
   return <span className="text-[0.62rem] tabular-nums text-(--ui-text-quaternary)">{n}</span>
 }
 
-export function DataTab({ kind, rt }: { kind: StepKind; rt: StepRuntime }) {
+function PinRow({
+  config,
+  onChange,
+  rt
+}: {
+  config: StepConfig
+  onChange: (patch: Partial<StepConfig>) => void
+  rt: StepRuntime
+}) {
+  if (config.pin) {
+    return (
+      <SidePanelMetaRow control label="Pinned" tip="This step answers with the frozen output and does not run.">
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 truncate text-(--ui-text-secondary)">{config.pin.summary}</span>
+          <Button className="ml-auto" onClick={() => onChange({ pin: undefined })} size="xs" variant="secondary">
+            Unpin
+          </Button>
+        </div>
+      </SidePanelMetaRow>
+    )
+  }
+
+  if (rt.status !== 'done' || !rt.output) {
+    return null
+  }
+
+  return (
+    <SidePanelMetaRow
+      control
+      label="Output"
+      tip="Freeze this output on the step: later runs reuse it without calling the model, so you can work on what comes after."
+    >
+      <Button
+        onClick={() =>
+          onChange({ pin: { output: rt.output ?? {}, summary: rt.summary ?? 'done', verdict: rt.verdict ?? null } })
+        }
+        size="xs"
+        variant="secondary"
+      >
+        Pin this output
+      </Button>
+    </SidePanelMetaRow>
+  )
+}
+
+export function DataTab({
+  config,
+  kind,
+  onChange,
+  rt
+}: {
+  config: StepConfig
+  kind: StepKind
+  onChange: (patch: Partial<StepConfig>) => void
+  rt: StepRuntime
+}) {
   // A gate takes children and returns a decision; every other kind takes input
   // and returns a summary. Same two rows either way.
   const isGate = kind === 'gate'
@@ -74,6 +130,7 @@ export function DataTab({ kind, rt }: { kind: StepKind; rt: StepRuntime }) {
         <SidePanelMetaRow label={isGate ? 'Decision' : 'Summary'} wrap>
           {rt.summary ?? '—'}
         </SidePanelMetaRow>
+        {hasField(kind, 'pin') && <PinRow config={config} onChange={onChange} rt={rt} />}
       </SidePanelMeta>
 
       {rt.output && (

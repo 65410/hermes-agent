@@ -90,7 +90,7 @@ export function Inspector({
             strict={strict}
           />
         ) : (
-          <DataTab kind={def.kind} rt={rt} />
+          <DataTab config={config} kind={def.kind} onChange={onChange} rt={rt} />
         )}
       </SidePanelBody>
     </>

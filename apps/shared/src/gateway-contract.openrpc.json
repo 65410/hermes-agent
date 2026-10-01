@@ -4544,7 +4544,7 @@
     },
     {
       "name": "workflow.run.active",
-      "summary": "The workflow's newest run and its events (null run when none).",
+      "summary": "The workflow's newest live run and its recorded Relay events (null run when none).",
       "params": [
         {
           "name": "params",
@@ -4580,7 +4580,7 @@
     },
     {
       "name": "workflow.run.event",
-      "summary": "Emit a named event that parked wait/gate steps may be waiting for.",
+      "summary": "Publish a named event for whatever workflow listens: event triggers and parked waits.",
       "params": [
         {
           "name": "params",
@@ -4598,12 +4598,12 @@
     },
     {
       "name": "workflow.run.events",
-      "summary": "One run's state and the events after a sequence number (runId 404s when unknown).",
+      "summary": "One run's state and its recorded Relay events (null run while a start is still queued).",
       "params": [
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/WorkflowRunEventsParams"
+            "$ref": "#/components/schemas/RunIdParams"
           }
         }
       ],
@@ -4670,7 +4670,7 @@
     },
     {
       "name": "workflow.run.start",
-      "summary": "Start a gateway run of a stored workflow graph.",
+      "summary": "Publish a start for a stored workflow graph; the workflow reactor runs it.",
       "params": [
         {
           "name": "params",
@@ -39442,6 +39442,11 @@
             ],
             "default": null,
             "title": "Runid"
+          },
+          "recording": {
+            "default": true,
+            "title": "Recording",
+            "type": "boolean"
           }
         },
         "title": "WorkflowRunActiveResult",
@@ -39471,35 +39476,19 @@
       },
       "WorkflowRunEventPayload": {
         "additionalProperties": false,
-        "description": "One run-event log line (``workflow/store.py::append_event``); ``payload`` is the\nengine's (see the plugin's ``protocol.ts`` \u2014 NodeStarted, RunFinished, \u2026).",
+        "description": "One Relay event just recorded under a workflow run's session (``event`` is the ATOF record).",
         "properties": {
           "runId": {
             "title": "Runid",
             "type": "string"
           },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          },
-          "ts": {
-            "title": "Ts",
-            "type": "integer"
-          },
-          "type": {
-            "title": "Type",
-            "type": "string"
-          },
-          "payload": {
-            "additionalProperties": true,
-            "title": "Payload",
-            "type": "object"
+          "event": {
+            "title": "Event"
           }
         },
         "required": [
           "runId",
-          "seq",
-          "ts",
-          "type"
+          "event"
         ],
         "title": "WorkflowRunEventPayload",
         "type": "object"
@@ -39507,35 +39496,15 @@
       "WorkflowRunEventResult": {
         "additionalProperties": false,
         "properties": {
-          "started": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Started",
-            "type": "array"
-          }
-        },
-        "title": "WorkflowRunEventResult",
-        "type": "object"
-      },
-      "WorkflowRunEventsParams": {
-        "additionalProperties": false,
-        "properties": {
-          "runId": {
-            "minLength": 1,
-            "title": "Runid",
+          "id": {
+            "title": "Id",
             "type": "string"
-          },
-          "after": {
-            "default": -1,
-            "title": "After",
-            "type": "integer"
           }
         },
         "required": [
-          "runId"
+          "id"
         ],
-        "title": "WorkflowRunEventsParams",
+        "title": "WorkflowRunEventResult",
         "type": "object"
       },
       "WorkflowRunEventsResult": {
@@ -39567,6 +39536,11 @@
             ],
             "default": null,
             "title": "Runid"
+          },
+          "recording": {
+            "default": true,
+            "title": "Recording",
+            "type": "boolean"
           }
         },
         "title": "WorkflowRunEventsResult",
@@ -39649,6 +39623,7 @@
       },
       "WorkflowStartedResult": {
         "additionalProperties": false,
+        "description": "``status`` is ``queued`` until the reactor picks the start up (or the live run's, when Play\nadopted one already going).",
         "properties": {
           "runId": {
             "title": "Runid",
@@ -40894,7 +40869,7 @@
     },
     {
       "name": "workflow.run",
-      "summary": "A workflow run's event log, folded live by the Workflows canvas.",
+      "summary": "A workflow run's Relay trace as it is recorded, folded live by the Workflows canvas.",
       "params": [
         {
           "name": "payload",

@@ -1,96 +1,113 @@
 """The plumbing a run needs wherever it is being driven from.
 
-One run is touched by several threads: the worker walking it, a timer firing
-under it, and an RPC handler asking it to pause. All three need the same lock,
-the same event counter and the same signal mailbox, so those live here rather
-than in the loop — the loop is one caller of this, not the owner of it.
+One run is touched by several threads: the loop thread scheduling it, step workers computing under
+it, timer and poll threads firing for its waits, and the reactor delivering events to it. The loop
+thread is the only writer of a live run's state; everyone else posts to the run's mailbox and the
+loop folds the mail in between steps. ``post`` starts a loop when none is alive, and ``retire`` (the
+loop's last act) refuses while mail is waiting, both under one lock, so mail can never land in a
+mailbox nobody reads.
 
-``spawn`` imports the loop late, on purpose. Everything else in this file is
-below the loop; spawn is the one thing that reaches back up, and a late import
-is what keeps the dependency pointing one way at module level.
+``ensure_running`` imports the loop late, on purpose: everything else here is below the loop, and
+the late import keeps the module-level dependency pointing one way.
 """
 
 from __future__ import annotations
 
 import threading
+import time
+from typing import Any
 
-from workflow.store import append_event, load_run, save_run
+from workflow import trace
+from workflow.store import load_run, save_run
 
+_lock = threading.Lock()
 _threads: dict[str, threading.Thread] = {}
-_timer_threads: dict[str, threading.Thread] = {}
-_thread_lock = threading.Lock()
-
+_mail: dict[str, list[dict[str, Any]]] = {}
+_wakeups: dict[str, threading.Event] = {}
 _run_locks: dict[str, threading.Lock] = {}
-_run_locks_guard = threading.Lock()
-
-# Pause/cancel from the RPC thread. The runner holds its own state dict and
-# save_run's it — writing the flag only to disk gets clobbered, so the live
-# loop never sees it.
-_signals: dict[str, str] = {}
-_signals_lock = threading.Lock()
+# What a step worker may need to know mid-step: "pause" or "cancel". The mail is the loop's; this
+# is the read-only echo a long-running step (the scripted fake) polls to stop early.
+_stopping: dict[str, str] = {}
 
 
 def lock_for(run_id: str) -> threading.Lock:
-    with _run_locks_guard:
-        lock = _run_locks.get(run_id)
-        if lock is None:
-            lock = threading.Lock()
-            _run_locks[run_id] = lock
-        return lock
+    """Held by the loop for a whole pass, and by anyone mutating a run that has no loop."""
+    with _lock:
+        return _run_locks.setdefault(run_id, threading.Lock())
 
 
-def signal(run_id: str, kind: str) -> None:
-    with _signals_lock:
-        _signals[run_id] = kind
+def wakeup_for(run_id: str) -> threading.Event:
+    with _lock:
+        return _wakeups.setdefault(run_id, threading.Event())
 
 
-def clear_signal(run_id: str) -> None:
-    with _signals_lock:
-        _signals.pop(run_id, None)
+def post(run_id: str, mail: dict[str, Any], *, start: bool = True, execute_fn=None) -> None:
+    """Hand the run something to fold in: a resolved wait, an answer, a fired trigger, a pause.
+    ``start=False`` leaves starting the loop to the caller (a synchronous ``advance``)."""
+    kind = mail.get("kind")
+    with _lock:
+        _mail.setdefault(run_id, []).append(dict(mail))
+        if kind in {"pause", "cancel"}:
+            _stopping[run_id] = kind
+        elif kind == "resume":
+            _stopping.pop(run_id, None)
+    wakeup_for(run_id).set()
+    if start:
+        ensure_running(run_id, execute_fn)
 
 
-def absorb_signals(state: dict) -> None:
-    """Fold a pending pause/cancel into the live state dict."""
-    with _signals_lock:
-        kind = _signals.get(state["runId"])
-    if kind == "pause":
-        state["pauseRequested"] = True
-    elif kind == "cancel":
-        state["status"] = "cancelled"
+def take_mail(run_id: str) -> list[dict[str, Any]]:
+    with _lock:
+        return _mail.pop(run_id, [])
 
 
-def emit(state: dict, event_type: str, payload: dict | None = None) -> dict:
-    """Append one event, numbering it from the live counter.
+def stopping(run_id: str) -> str | None:
+    with _lock:
+        return _stopping.get(run_id)
 
-    The counter is the caller's, not the file's: reloading the run JSON to
-    number a line races an in-flight save, reuses numbers, and the canvas drops
-    every event after the collision.
-    """
-    seq = int(state.get("seq") or 0)
-    event = append_event(state["runId"], event_type, payload, seq=seq)
-    state["seq"] = seq + 1
-    return event
+
+def clear_stopping(run_id: str) -> None:
+    with _lock:
+        _stopping.pop(run_id, None)
+
+
+def retire(run_id: str) -> bool:
+    """The loop is about to exit. False (and keep looping) when mail arrived in the meantime."""
+    with _lock:
+        if _mail.get(run_id):
+            return False
+        if _threads.get(run_id) is threading.current_thread():
+            _threads.pop(run_id, None)
+        return True
 
 
 def thread_alive(run_id: str) -> bool:
-    with _thread_lock:
+    with _lock:
         thread = _threads.get(run_id)
     return thread is not None and thread.is_alive()
 
 
+def emit(state: dict, event_type: str, payload: dict | None = None) -> None:
+    """Record one runner event on the run's Relay trace, numbered from the live counter."""
+    seq = int(state.get("seq") or 0)
+    state["seq"] = seq + 1
+    trace.mark(state["runId"], event_type, payload or {}, seq)
+
+
 def fail_dead_run(state: dict) -> dict:
-    """A run whose worker is gone. Nothing will ever move it again, so say so
-    rather than leaving it spinning at "running" forever."""
+    """A run that says "running" with no loop alive. Nothing will move it again, so say so rather
+    than leaving it spinning forever."""
     state["status"] = "failed"
     state["failed"] = True
     state["pauseRequested"] = False
-    save_run(state)
     emit(state, "RunFinished", {"state": "failed", "error": "runner process died"})
-    return load_run(state["runId"]) or state
+    save_run(state)
+    return state
 
 
-def spawn(run_id: str, execute_fn=None) -> None:
-    """Drive a run on its own thread."""
+def ensure_running(run_id: str, execute_fn=None) -> None:
+    """Start the run's loop thread unless one is already alive."""
+    from agent.memory_provider import spawn_context_thread
     from workflow.runner import advance
 
     def work() -> None:
@@ -98,29 +115,34 @@ def spawn(run_id: str, execute_fn=None) -> None:
             advance(run_id, execute_fn=execute_fn)
         except Exception as exc:
             state = load_run(run_id)
-            if state is None:
-                return
-            state["status"] = "failed"
-            state["failed"] = True
-            save_run(state)
-            emit(state, "RunFinished", {"state": "failed", "error": str(exc)})
+            if state is not None:
+                state["status"] = "failed"
+                state["failed"] = True
+                emit(state, "RunFinished", {"state": "failed", "error": str(exc)})
+                save_run(state)
+        finally:
+            with _lock:
+                if _threads.get(run_id) is threading.current_thread():
+                    _threads.pop(run_id, None)
+                again = bool(_mail.get(run_id))
+            if again:
+                ensure_running(run_id, execute_fn)
 
-    thread = threading.Thread(target=work, name=f"workflow-{run_id}", daemon=True)
-    with _thread_lock:
+    with _lock:
+        thread = _threads.get(run_id)
+        if thread is not None and thread.is_alive():
+            return
+        thread = spawn_context_thread(work, name=f"workflow-{run_id}")
         _threads[run_id] = thread
     thread.start()
 
 
-def arm(key: str, name: str, seconds: float, fire) -> None:
-    """Run `fire` once, `seconds` from now, on a daemon thread."""
+def arm(name: str, seconds: float, fire) -> None:
+    """Run ``fire`` once, ``seconds`` from now, on a daemon thread under the caller's profile."""
+    from agent.memory_provider import spawn_context_thread
 
     def wait_then_fire() -> None:
-        import time
-
         time.sleep(max(0.0, seconds))
         fire()
 
-    thread = threading.Thread(target=wait_then_fire, name=name, daemon=True)
-    with _thread_lock:
-        _timer_threads[key] = thread
-    thread.start()
+    spawn_context_thread(wait_then_fire, name=name).start()

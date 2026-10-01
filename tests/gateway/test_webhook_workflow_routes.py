@@ -35,20 +35,21 @@ async def test_a_static_route_named_like_a_workflow_hook_keeps_its_hmac():
 
 
 @pytest.mark.asyncio
-async def test_a_minted_workflow_hook_starts_its_workflow_on_an_unsigned_post(monkeypatch):
-    from workflow import runner, triggers
+async def test_a_minted_workflow_hook_publishes_its_start_on_an_unsigned_post():
+    from workflow import events, triggers
 
-    started: list[tuple[str, dict]] = []
-    monkeypatch.setattr(runner, "start_run", lambda wid, **kw: started.append((wid, kw["payload"])) or {"runId": "r1"})
-    monkeypatch.setattr(runner, "start_matching", lambda **kw: [])
     hook = triggers.hook_info("ship")
-    adapter, client = _client({hook["route"]: {"secret": hook["secret"], "workflow": "ship", "hermes_workflow": True}})
+    adapter, client = _client({hook["route"]: {
+        "secret": hook["secret"], "workflow": "ship", "trigger": "go", "hermes_workflow": True,
+    }})
     async with client as cli:
         resp = await cli.post(f"/webhooks/{hook['route']}", json={"x": 1})
         assert resp.status == 200
-        assert (await resp.json())["run_id"] == "r1"
+        run_id = (await resp.json())["run_id"]
         # A sender that signs is still verified: a wrong signature is refused.
         bad = await cli.post(f"/webhooks/{hook['route']}", json={"x": 2}, headers={"X-Webhook-Signature": "nope"})
         assert bad.status == 401
-    assert started == [("ship", {"x": 1})]
+    (start,) = events.drain()
+    assert start["name"] == events.START
+    assert start["payload"] == {"workflowId": "ship", "runId": run_id, "payload": {"x": 1}, "source": "webhook", "trigger": "go"}
     adapter.handle_message.assert_not_called()

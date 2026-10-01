@@ -52,25 +52,22 @@ def workflow_tool(
     if verb in NEEDS_WORKFLOW and not (workflow or "").strip():
         return tool_error(f"{verb} needs a workflow name.")
 
-    # A run is the gateway walking the stored graph. It does not need the
-    # canvas — that is the point of the HERMES_HOME copy.
+    # A run is the workflow reactor walking the stored graph. It does not need the canvas —
+    # that is the point of the HERMES_HOME copy — so the tool publishes the start and returns.
     if verb == "run":
         try:
-            from workflow.runner import start_run
+            from workflow import events
+            from workflow.store import get_document, new_run_id
 
-            state = start_run(str(workflow).strip(), payload=payload, source="tool")
-        except ValueError as exc:
-            return tool_error(str(exc))
+            doc = get_document(str(workflow).strip())
+            if doc is None:
+                return tool_error(f"No workflow called '{str(workflow).strip()}'.")
+            run_id = new_run_id()
+            events.publish(events.START, {"workflowId": doc["id"], "runId": run_id, "payload": payload,
+                                          "source": "tool"}, source="tool")
         except Exception as exc:
             return tool_error(f"Failed to start the run: {exc}")
-        return json.dumps(
-            {
-                "runId": state.get("runId"),
-                "status": state.get("status"),
-                "workflow": state.get("workflowId"),
-            },
-            ensure_ascii=False,
-        )
+        return json.dumps({"runId": run_id, "status": "queued", "workflow": doc["id"]}, ensure_ascii=False)
 
     if callback is None:
         return tool_error("workflow is only available in the Hermes desktop app.")

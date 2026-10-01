@@ -21,13 +21,15 @@ import {
   Textarea,
   useValue
 } from '@hermes/plugin-sdk'
+import { useState } from 'react'
 
 import { $currentId, $webhooks } from './documents'
-import { type Graph, type OpResult, type Problem, setKind } from './graph'
+import { type Graph, isLoop, type OpResult, type Problem, setKind } from './graph'
 import { BranchEditor } from './inspector-branches'
 import type { StepDef } from './scenario'
 import {
   hasField,
+  type Join,
   ON_FAIL_OPTIONS,
   type OnFail,
   STEP_KINDS,
@@ -38,6 +40,58 @@ import {
   type WaitKind
 } from './scenario'
 import { statusFor } from './validation'
+
+const JOIN_OPTIONS: { id: Join; label: string }[] = [
+  { id: 'all', label: 'All arrive' },
+  { id: 'any', label: 'First arrives' }
+]
+
+/** A comma list as typed, kept as the array the runner reads. */
+const listOf = (text: string) =>
+  text
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+
+function PayloadEditor({ onChange, value }: { onChange: (v?: Record<string, unknown>) => void; value?: object }) {
+  const [draft, setDraft] = useState(() => (value ? JSON.stringify(value, null, 2) : ''))
+  const [bad, setBad] = useState(false)
+
+  const commit = (text: string) => {
+    setDraft(text)
+
+    if (!text.trim()) {
+      setBad(false)
+      onChange(undefined)
+
+      return
+    }
+
+    try {
+      const parsed: unknown = JSON.parse(text)
+      const ok = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      setBad(!ok)
+
+      if (ok) {
+        onChange(parsed as Record<string, unknown>)
+      }
+    } catch {
+      setBad(true)
+    }
+  }
+
+  return (
+    <FieldStatusSlot status={bad ? { level: 'error', message: 'Not a JSON object yet.' } : undefined}>
+      <Textarea
+        className="nodrag nowheel min-h-20 font-mono text-[0.6875rem]"
+        onChange={e => commit(e.target.value)}
+        placeholder='{"pull_request": {"number": 12}}'
+        rows={3}
+        value={draft}
+      />
+    </FieldStatusSlot>
+  )
+}
 
 export function ConfigTab({
   config,
@@ -64,6 +118,7 @@ export function ConfigTab({
   // type here — it has no control to sit under, so it keeps the banner.
   const unplaced = problems.filter(p => !p.field)
   const webhook = useValue($webhooks)[useValue($currentId) ?? '']
+  const inputs = graph.edges.filter(e => e.target === def.id && !isLoop(e)).length
 
   return (
     <div className="flex flex-col gap-4 text-sm">
@@ -132,6 +187,53 @@ export function ConfigTab({
               placeholder="anyone"
               size="sm"
               value={config.assignee ?? ''}
+            />
+          </SidePanelMetaRow>
+        )}
+
+        {has('notify') && (
+          <SidePanelMetaRow
+            control
+            label="Also ask in"
+            tip="Chats that get the question too (send_message targets, comma-separated). Answer there with /workflow approve <code>."
+          >
+            <Input
+              className="nodrag"
+              onChange={e => onChange({ notify: listOf(e.target.value) })}
+              placeholder="telegram, discord:#ops"
+              size="sm"
+              value={(config.notify ?? []).join(', ')}
+            />
+          </SidePanelMetaRow>
+        )}
+
+        {has('toolsets') && (
+          <SidePanelMetaRow
+            control
+            label="Toolsets"
+            tip="Narrow what this step may use (comma-separated toolset names). Empty uses the profile's own set — worth narrowing for a step a webhook or an event can start."
+          >
+            <Input
+              className="nodrag"
+              onChange={e => onChange({ toolsets: listOf(e.target.value) })}
+              placeholder="profile default"
+              size="sm"
+              value={(config.toolsets ?? []).join(', ')}
+            />
+          </SidePanelMetaRow>
+        )}
+
+        {has('join') && inputs > 1 && (
+          <SidePanelMetaRow
+            control
+            label="Starts when"
+            tip="With several inputs: wait for every one, or start on the first to arrive and ignore the rest."
+          >
+            <SegmentedControl
+              className="nodrag w-full"
+              onChange={(v: Join) => onChange({ join: v })}
+              options={JOIN_OPTIONS}
+              value={config.join ?? 'all'}
             />
           </SidePanelMetaRow>
         )}
@@ -313,6 +415,15 @@ export function ConfigTab({
               />
             </Field>
           )}
+        </SidePanelSection>
+      )}
+
+      {has('pinPayload') && (config.on?.type ?? 'manual') !== 'manual' && (
+        <SidePanelSection
+          label="Test payload"
+          title="Used when you press Play, so this workflow can be tried without a real delivery."
+        >
+          <PayloadEditor onChange={v => onChange({ pinPayload: v })} value={config.pinPayload} />
         </SidePanelSection>
       )}
 

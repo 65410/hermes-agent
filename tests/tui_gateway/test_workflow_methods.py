@@ -1,4 +1,5 @@
-"""workflow.store / workflow.run JSON-RPC — documents on disk, runs emit events."""
+"""workflow.store / workflow.run JSON-RPC — documents on disk; runs are published, and read back
+from their Relay trace."""
 
 import tui_gateway.server as srv
 from workflow.store import load_documents
@@ -59,16 +60,15 @@ def test_run_start_walks_a_stub_agent(tmp_path, monkeypatch):
         )
     )
     started = _result(srv._methods["workflow.run.start"](2, {"workflowId": "job"}))
-    assert started["runId"]
-    # The method returns as soon as the thread is spawned; wait for the log.
-    import time
+    assert started["runId"] and started["status"] == "queued"
+    # Play only publishes; the workflow reactor runs it.
+    from workflow import reactor
 
-    from workflow.store import load_events, load_run
+    assert reactor.drain_once(background=False) == 1
+    from workflow.trace import flush
 
-    deadline = time.time() + 2
-    state = load_run(started["runId"])
-    while time.time() < deadline and state and state.get("status") in {"running", "paused"}:
-        time.sleep(0.05)
-        state = load_run(started["runId"])
-    events = load_events(started["runId"])
-    assert any(e["type"] == "RunStarted" for e in events)
+    flush()
+    reply = _result(srv._methods["workflow.run.events"](3, {"runId": started["runId"]}))
+    assert reply["run"]["status"] == "succeeded"
+    marks = [e["name"] for e in reply["events"] if e.get("kind") == "mark"]
+    assert marks[0] == "hermes.workflow.RunStarted" and marks[-1] == "hermes.workflow.RunFinished"

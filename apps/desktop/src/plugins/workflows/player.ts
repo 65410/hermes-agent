@@ -1,6 +1,6 @@
-// The canvas folds a prefix of the gateway event log. Play starts a real run;
-// the bus is the only source after a one-shot catch-up. Seeking reapplies
-// fewer events — the run itself is not rewound.
+// The canvas folds a prefix of the run's Relay trace. Play publishes a start; the workflow reactor
+// runs it — in this backend or in the gateway, whichever holds it — and its trace is the only
+// source. Seeking reapplies fewer events; the run itself is not rewound.
 
 import { host } from '@hermes/plugin-sdk'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -9,6 +9,7 @@ import { noteRun } from './documents'
 import type { RunPlan } from './graph'
 import { type Checkpoint, type ProtoEvent, type RunShape, type World } from './protocol'
 import { checkpointsOf, reduceEvents } from './protocol-world'
+import { markOf, mergeRelay, protoEvents, type RelayEvent } from './relay-run'
 import {
   activeRun,
   askInCanvas,
@@ -18,6 +19,7 @@ import {
   respondRun,
   resumeRun,
   runEvents,
+  type RunReply,
   startRun
 } from './run-rpc'
 import type { OnFail } from './scenario'
@@ -39,25 +41,22 @@ const RunNowCtx = createContext<RunNow>({
 export const RunNowProvider = RunNowCtx.Provider
 export const useRunNow = () => useContext(RunNowCtx)
 
-function sameEvent(a: ProtoEvent, b: ProtoEvent) {
-  return a.runId === b.runId && a.seq === b.seq && a.type === b.type && a.ts === b.ts
-}
-
-function runIsFinished(events: ProtoEvent[]) {
-  return events.some(e => e.type === 'RunFinished')
-}
+/** How often the canvas re-reads a run's trace when nothing has streamed in: the run may be
+ *  executing in another Hermes process, whose trace this one only sees on disk. */
+const POLL_MS = 1500
+const QUIET_MS = 2500
 
 /** none → (pause requested) pausing → (boundary reached) paused → resume. */
 export type PauseState = 'none' | 'pausing' | 'paused'
 
-/** A question the run is parked on. The stream stops here and does not move
- *  again until someone answers — which is the difference between a human step
- *  and a sleep. */
+/** A question the run is parked on. That branch does not move again until someone answers —
+ *  here, or from any chat with the code. */
 export interface Question {
   nodeId: string
   prompt: string
   who: string
   onFail: OnFail
+  code?: string
 }
 
 /** Structural equality over the JSON-shaped values a StepRuntime holds. Written
@@ -87,6 +86,24 @@ function sameValue(a: unknown, b: unknown): boolean {
   return keys.every(k => sameValue(av[k], bv[k]))
 }
 
+const questionKey = (q: Question) => `${q.nodeId}:${q.code ?? ''}`
+
+/** The oldest question nobody has answered yet — several steps can be waiting at once. One
+ *  answered here is skipped before its answer reaches the trace. */
+function pendingQuestion(events: ProtoEvent[], answered: ReadonlySet<string>): Question | null {
+  const open = new Map<string, Question>()
+
+  for (const e of events) {
+    if (e.type === 'HumanWaiting') {
+      open.set(e.payload.nodeId, e.payload)
+    } else if (e.type === 'HumanResponded') {
+      open.delete(e.payload.nodeId)
+    }
+  }
+
+  return [...open.values()].find(q => !answered.has(questionKey(q))) ?? null
+}
+
 export interface Player {
   events: ProtoEvent[]
   world: World
@@ -97,18 +114,20 @@ export interface Player {
   live: boolean
   /** The scenario is executing (events still arriving or holding at a pause). */
   running: boolean
+  /** False when traces are off: the run still runs, but leaves no history to fold. */
+  recording: boolean
   pauseState: PauseState
-  /** Set while the run is parked on a person. */
+  /** Set while a step is parked on a person. */
   asking: Question | null
   /** The parked question is off screen — hidden, not answered. Lives here
    *  rather than in the view because the run is what's blocked by it: the
    *  transport has to know that "carry on" means "bring the question back". */
   deferred: boolean
-  /** Put the question away to go look at the graph. The run stays parked. */
+  /** Put the question away to go look at the graph. The step stays parked. */
   defer: () => void
   /** Bring a deferred question back. */
   reveal: () => void
-  /** Answer the parked question and let the run move again. */
+  /** Answer the parked question and let that branch move again. */
   respond: (decision: 'approved' | 'denied') => void
   /** Event timestamp the view is frozen at, or null while live. */
   frozenAt: number | null
@@ -137,11 +156,12 @@ const shapeOf = (plan: RunPlan): RunShape => ({
  *  was built from, so editing mid-replay can't retune the past. */
 export function usePlayer(planOf: () => RunPlan): Player {
   const [shape, setShape] = useState<RunShape>(() => shapeOf(planOf()))
-  const [events, setEvents] = useState<ProtoEvent[]>([])
+  const [trace, setTrace] = useState<RelayEvent[]>([])
+  const [runId, setRunId] = useState<string | null>(null)
   const [head, setHead] = useState<number | null>(null) // null = follow tail
   const [running, setRunning] = useState(false)
+  const [recording, setRecording] = useState(true)
   const [pauseState, setPauseState] = useState<PauseState>('none')
-  const runIdRef = useRef('run-idle')
   const eventsRef = useRef<ProtoEvent[]>([])
   const headRef = useRef(0)
   const pauseRef = useRef<PauseState>('none')
@@ -149,6 +169,14 @@ export function usePlayer(planOf: () => RunPlan): Player {
   const askingRef = useRef<Question | null>(null)
   const [deferred, setDeferred] = useState(false)
   const liveRun = useRef<string | null>(null)
+  const lastLive = useRef(0)
+  const answered = useRef(new Set<string>())
+
+  // When the stream last carried this run, so the poll stays quiet while it does.
+  const heard = () => {
+    lastLive.current = Date.now()
+  }
+
   const planOfRef = useRef(planOf)
   planOfRef.current = planOf
 
@@ -160,45 +188,57 @@ export function usePlayer(planOf: () => RunPlan): Player {
   // Every arrival and every clearing goes through here, so a deferral can
   // never outlive the question it was about.
   const ask = (q: Question | null) => {
+    if (askingRef.current?.nodeId === q?.nodeId && askingRef.current?.code === q?.code) {
+      return
+    }
+
     askingRef.current = q
     setAsking(q)
     setDeferred(false)
   }
 
-  const adoptLive = useCallback((runId: string, incoming: ProtoEvent[]) => {
-    liveRun.current = runId
-    runIdRef.current = runId
-    setEvents(incoming)
+  const events = useMemo(() => (runId ? protoEvents(runId, trace) : []), [runId, trace])
 
-    if (runIsFinished(incoming)) {
+  // What the trace says about the run as a whole: finished, paused, a question out.
+  useEffect(() => {
+    if (!runId) {
+      return
+    }
+
+    ask(pendingQuestion(events, answered.current))
+
+    if (events.some(e => e.type === 'RunFinished')) {
       setRunning(false)
       setPause('none')
     }
+  }, [events, runId])
 
-    const waiting = [...incoming].reverse().find(e => e.type === 'HumanWaiting')
+  const follow = useCallback((id: string, reply: RunReply) => {
+    liveRun.current = id
+    setRunId(id)
+    setRecording(reply.recording !== false)
+    setTrace(prev => mergeRelay(prev, reply.events ?? []))
 
-    const answered = waiting
-      ? incoming.some(
-          e => e.type === 'HumanResponded' && e.payload.nodeId === waiting.payload.nodeId && e.seq > waiting.seq
-        )
-      : false
+    if (reply.run?.status === 'paused') {
+      setPause('paused')
+    }
 
-    ask(!answered && waiting?.type === 'HumanWaiting' ? waiting.payload : null)
+    if (reply.run && !LIVE.has(reply.run.status)) {
+      setRunning(false)
+    }
   }, [])
 
-  const adoptRun = useCallback(
-    async (runId: string, workflowId: string) => {
-      liveRun.current = runId
-      runIdRef.current = runId
+  const begin = useCallback(
+    (id: string, workflowId: string) => {
+      liveRun.current = id
+      setRunId(id)
+      setTrace([])
       noteRun(workflowId)
-
-      const snap = await runEvents(runId)
-
-      if (liveRun.current === runId) {
-        adoptLive(runId, snap.events ?? [])
-      }
+      void runEvents(id)
+        .then(reply => liveRun.current === id && follow(id, reply))
+        .catch(() => {})
     },
-    [adoptLive]
+    [follow]
   )
 
   const start = useCallback(() => {
@@ -210,7 +250,6 @@ export function usePlayer(planOf: () => RunPlan): Player {
     setShape(shapeOf(plan))
     setPause('none')
     ask(null)
-    setEvents([])
     setHead(null)
 
     if (!plan.id) {
@@ -221,12 +260,12 @@ export function usePlayer(planOf: () => RunPlan): Player {
 
     setRunning(true)
     void startRun(plan, 'manual')
-      .then(res => adoptRun(res.runId, plan.id))
+      .then(res => begin(res.runId, plan.id))
       .catch(() => {
         liveRun.current = null
         setRunning(false)
       })
-  }, [adoptRun, planOf])
+  }, [begin, planOf])
 
   const fireWebhook = useCallback(async () => {
     const plan = planOf()
@@ -238,20 +277,28 @@ export function usePlayer(planOf: () => RunPlan): Player {
     setShape(shapeOf(plan))
     setPause('none')
     ask(null)
-    setEvents([])
     setHead(null)
     setRunning(true)
 
     try {
       const res = await startRun(plan, 'webhook', { ok: true })
 
-      await adoptRun(res.runId, plan.id)
+      begin(res.runId, plan.id)
     } catch (err) {
       liveRun.current = null
       setRunning(false)
       throw err
     }
-  }, [adoptRun, planOf])
+  }, [begin, planOf])
+
+  const clear = useCallback(() => {
+    liveRun.current = null
+    setRunId(null)
+    setTrace([])
+    setPause('none')
+    ask(null)
+    setHead(null)
+  }, [])
 
   const reset = useCallback(() => {
     const id = liveRun.current
@@ -260,21 +307,13 @@ export function usePlayer(planOf: () => RunPlan): Player {
       void cancelRun(id).catch(() => {})
     }
 
-    liveRun.current = null
-    setPause('none')
-    ask(null)
-    setEvents([])
-    setHead(null)
+    clear()
     setRunning(false)
-  }, [])
+  }, [clear])
 
   const restart = useCallback(() => {
     const id = liveRun.current
-    liveRun.current = null
-    setPause('none')
-    ask(null)
-    setEvents([])
-    setHead(null)
+    clear()
     const kick = () => start()
 
     if (id) {
@@ -282,7 +321,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
     } else {
       kick()
     }
-  }, [start])
+  }, [clear, start])
 
   const respond = useCallback((decision: 'approved' | 'denied') => {
     const q = askingRef.current
@@ -292,7 +331,10 @@ export function usePlayer(planOf: () => RunPlan): Player {
     }
 
     void respondRun(liveRun.current, q.nodeId, decision, q.who)
-      .then(() => ask(null))
+      .then(() => {
+        answered.current.add(questionKey(q))
+        ask(pendingQuestion(eventsRef.current, answered.current))
+      })
       .catch(() => {})
   }, [])
 
@@ -395,38 +437,51 @@ export function usePlayer(planOf: () => RunPlan): Player {
     return next
   }, [events, effHead, shape])
 
+  // The live stream: every Relay event recorded under a run this backend executes.
   useEffect(() => {
     return host.onEvent('workflow.run', event => {
-      const incoming = event.payload as ProtoEvent | undefined
+      const incoming = event.payload as { runId?: string; event?: RelayEvent } | undefined
 
-      if (!incoming?.runId || incoming.runId !== liveRun.current) {
+      if (!incoming?.runId || incoming.runId !== liveRun.current || !incoming.event) {
         return
       }
 
-      setEvents(prev => (prev.some(e => sameEvent(e, incoming)) ? prev : [...prev, incoming]))
+      heard()
+      const relay = incoming.event
+      setTrace(prev => mergeRelay(prev, [relay]))
+      const mark = markOf(relay)
 
-      if (incoming.type === 'HumanWaiting') {
-        ask(incoming.payload)
+      if (mark?.type === 'UserAsk') {
+        askInCanvas(planOfRef.current().id, String(mark.payload.nodeId), String(mark.payload.prompt))
       }
 
-      if (incoming.type === 'UserAsk') {
-        askInCanvas(planOfRef.current().id, incoming.payload.nodeId, incoming.payload.prompt)
-      }
-
-      if (incoming.type === 'HumanResponded' && askingRef.current?.nodeId === incoming.payload.nodeId) {
-        ask(null)
-      }
-
-      if (incoming.type === 'RunPaused') {
+      if (mark?.type === 'RunPaused') {
         setPause('paused')
-      }
-
-      if (incoming.type === 'RunFinished') {
-        setRunning(false)
-        setPause('none')
       }
     })
   }, [])
+
+  // A run executing in another Hermes process streams nothing here: read its trace off disk until
+  // it finishes (and until a queued start has become a run at all).
+  useEffect(() => {
+    if (!running || !runId) {
+      return
+    }
+
+    const id = runId
+
+    const timer = setInterval(() => {
+      if (Date.now() - lastLive.current < QUIET_MS) {
+        return
+      }
+
+      void runEvents(id)
+        .then(reply => liveRun.current === id && follow(id, reply))
+        .catch(() => {})
+    }, POLL_MS)
+
+    return () => clearInterval(timer)
+  }, [follow, running, runId])
 
   useEffect(() => {
     const plan = planOf()
@@ -443,20 +498,16 @@ export function usePlayer(planOf: () => RunPlan): Player {
         }
 
         setShape(shapeOf(plan))
-        adoptLive(res.runId, res.events ?? [])
         setRunning(true)
         setHead(null)
-
-        if (res.run.status === 'paused') {
-          setPause('paused')
-        }
+        follow(res.runId, res)
       })
       .catch(() => {})
 
     return () => {
       cancelled = true
     }
-  }, [adoptLive, planOf])
+  }, [follow, planOf])
 
   return {
     events,
@@ -465,6 +516,7 @@ export function usePlayer(planOf: () => RunPlan): Player {
     head: effHead,
     live: head == null,
     running,
+    recording,
     pauseState,
     asking,
     deferred,

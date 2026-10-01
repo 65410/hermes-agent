@@ -1,5 +1,8 @@
 // The wire boundary between the canvas and whatever runs the scenario.
 //
+// On the wire these arrive as `hermes.workflow.<Type>` marks in the run's Relay trace
+// (`relay-run.ts` folds them back into this vocabulary); this file is the vocabulary itself.
+//
 // Shaped on purpose like the Smithers gateway's run-event log
 // (`_smithers_events`: run_id, seq, timestamp_ms, type, payload_json), so a
 // real Smithers backend can drive this UI through a thin adapter instead of a
@@ -124,13 +127,13 @@ interface Envelope {
 }
 
 export type ProtoEvent =
-  | (Envelope & { type: 'RunStarted'; payload: { scenario: string } })
+  | (Envelope & { type: 'RunStarted'; payload: { scenario: string; source?: string; trigger?: string } })
   | (Envelope & { type: 'RunFinished'; payload: { state: 'succeeded' | 'failed' } })
   | (Envelope & { type: 'RunPaused'; payload: Record<string, never> })
   | (Envelope & { type: 'NodePending'; payload: NodeRef })
   | (Envelope & {
       type: 'NodeStarted'
-      payload: NodeRef & { input: string; maxIters: number; loop?: boolean }
+      payload: NodeRef & { input: string; maxIters: number; loop?: boolean; pinned?: boolean }
     })
   | (Envelope & { type: 'NodeFinished'; payload: NodeRef })
   | (Envelope & { type: 'NodeFailed'; payload: NodeRef & { error: string } })
@@ -169,6 +172,8 @@ export type ProtoEvent =
          *  assumed. It's the step's own on-failure setting: a denial IS the
          *  failure. */
         onFail: OnFail
+        /** Answers the same question from any chat: `/workflow approve <code>`. */
+        code?: string
       }
     })
   | (Envelope & {

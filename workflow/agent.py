@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable
+from typing import Any
 
 
 def build_prompt(goal: str, context: str, payload: Any, profile: str | None = None) -> str:
@@ -48,15 +48,6 @@ def parse_result(text: str) -> dict[str, Any]:
         if tail:
             verdict = tail[-1]
     return {"summary": raw[:400] or "done", "verdict": verdict, "output": output}
-
-
-def _arg_preview(args: Any) -> str:
-    if isinstance(args, dict):
-        for value in args.values():
-            if value not in (None, ""):
-                return str(value)[:80]
-        return ""
-    return str(args or "")[:80]
 
 
 # Demo slugs the starter canvas used to ship. They are not in any catalog —
@@ -145,17 +136,27 @@ def resolve_step_model(config: dict | None) -> tuple[str, str | None, str | None
     return model, provider, profile
 
 
+def step_toolsets(config: dict | None) -> list[str]:
+    raw = (config or {}).get("toolsets")
+    items = raw if isinstance(raw, list) else str(raw or "").split(",")
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
 def execute_agent_step(
     goal: str,
     context: str,
     payload: Any,
     config: dict | None = None,
     *,
-    on_tool: Callable[[str, str], None] | None = None,
     session_id: str | None = None,
+    parent_session_id: str | None = None,
     resume: bool = False,
 ) -> dict[str, Any]:
-    """Call a real model. Tests inject their own execute_fn and never hit this."""
+    """Call a real model. Tests inject their own execute_fn and never hit this.
+
+    The step is a delegated child of the run's Relay session (``parent_session_id``), so its model
+    calls and tools land in the run's trace like any subagent's. ``toolsets`` on the card narrows
+    what the step may reach for; without it the step has the profile's own set."""
     cfg = config or {}
     model, provider, profile = resolve_step_model(cfg)
     if not model:
@@ -183,10 +184,6 @@ def execute_agent_step(
     except (TypeError, ValueError):
         timeout_mins = 0
 
-    def started(_call_id, name, args):
-        if on_tool is not None:
-            on_tool(str(name or ""), _arg_preview(args))
-
     kwargs: dict[str, Any] = {
         "model": model,
         "quiet_mode": True,
@@ -194,12 +191,15 @@ def execute_agent_step(
         "skip_context_files": True,
         "max_iterations": iterations,
         "run_budget_seconds": (timeout_mins * 60) if timeout_mins else None,
-        "tool_start_callback": started,
         "platform": "workflow",
         "session_id": session_id,
+        "parent_session_id": parent_session_id,
     }
     if provider:
         kwargs["provider"] = provider
+    toolsets = step_toolsets(cfg)
+    if toolsets:
+        kwargs["enabled_toolsets"] = toolsets
 
     try:
         agent = AIAgent(**kwargs)

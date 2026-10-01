@@ -1,7 +1,9 @@
-"""Documents and run logs under ``HERMES_HOME/workflows``.
+"""Documents and run state under ``HERMES_HOME/workflows``.
 
 The desktop still keeps a local cache so a drag does not wait on a socket.
-This is the copy the gateway, cron, and inbound webhooks read.
+This is the copy the gateway, cron, and inbound webhooks read. A run's state
+file is what the runner resumes from; its history is the run's Relay trace
+(``workflow/trace.py``), not a log kept here.
 """
 
 from __future__ import annotations
@@ -11,29 +13,24 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from hermes_constants import get_hermes_home
 from utils import atomic_write_text
 
 _lock = threading.RLock()
-_event_sink: Callable[[dict], None] | None = None
+
+LIVE_STATUSES = frozenset({"running", "paused", "waiting_human", "waiting_world"})
 
 
-def set_event_sink(fn: Callable[[dict], None] | None) -> None:
-    """Optional fan-out for each appended run event (desktop tails this)."""
-    global _event_sink
-    _event_sink = fn
-
-
-def workflows_dir() -> Path:
-    path = get_hermes_home() / "workflows"
+def workflows_dir(home: Path | None = None) -> Path:
+    path = (home or get_hermes_home()) / "workflows"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _docs_path() -> Path:
-    return workflows_dir() / "documents.json"
+def _docs_path(home: Path | None = None) -> Path:
+    return workflows_dir(home) / "documents.json"
 
 
 def _secrets_path() -> Path:
@@ -60,9 +57,9 @@ def _write_json(path: Path, data: Any) -> None:
     atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
-def load_documents() -> dict[str, Any]:
+def load_documents(home: Path | None = None) -> dict[str, Any]:
     with _lock:
-        raw = _read_json(_docs_path(), {"docs": [], "currentId": None})
+        raw = _read_json(_docs_path(home), {"docs": [], "currentId": None})
     if not isinstance(raw, dict):
         return {"docs": [], "currentId": None}
     docs = raw.get("docs")
@@ -160,10 +157,6 @@ def run_path(run_id: str) -> Path:
     return _runs_dir() / f"{run_id}.json"
 
 
-def events_path(run_id: str) -> Path:
-    return _runs_dir() / f"{run_id}.jsonl"
-
-
 def save_run(state: dict) -> dict:
     with _lock:
         _write_json(run_path(state["runId"]), state)
@@ -187,75 +180,14 @@ def list_runs(workflow_id: str | None = None) -> list[dict]:
     return out
 
 
+def live_runs(workflow_id: str | None = None) -> list[dict]:
+    return [r for r in list_runs(workflow_id) if r.get("status") in LIVE_STATUSES]
+
+
 def active_run(workflow_id: str) -> dict | None:
-    live = {"running", "paused", "waiting_human", "waiting_world"}
-    found = [r for r in list_runs(workflow_id) if r.get("status") in live]
+    """The workflow's newest live run — the one the canvas follows."""
+    found = live_runs(workflow_id)
     if not found:
         return None
     found.sort(key=lambda r: r.get("startedAt") or 0, reverse=True)
     return found[0]
-
-
-def _patch_run(run_id: str, **fields: Any) -> None:
-    """Write specific run fields without clobbering in-memory progress."""
-    raw = _read_json(run_path(run_id), None)
-    if not isinstance(raw, dict):
-        return
-    raw.update(fields)
-    _write_json(run_path(run_id), raw)
-
-
-def append_event(
-    run_id: str,
-    event_type: str,
-    payload: dict | None = None,
-    *,
-    seq: int | None = None,
-) -> dict:
-    """Append one jsonl line. ``seq`` is the caller's counter — do not reload
-    the run JSON and write it back, or an in-flight ``save_run`` of stale
-    ``seq`` will reuse numbers and the canvas will drop later events."""
-    if seq is None:
-        seq = int((load_run(run_id) or {}).get("seq") or 0)
-    event = {
-        "runId": run_id,
-        "seq": seq,
-        "ts": int(time.time() * 1000),
-        "type": event_type,
-        "payload": payload or {},
-    }
-    with _lock:
-        path = events_path(run_id)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-        _patch_run(run_id, seq=seq + 1)
-    sink = _event_sink
-    if sink is not None:
-        try:
-            sink(event)
-        except Exception:
-            pass
-    return event
-
-
-def load_events(run_id: str, after: int = -1) -> list[dict]:
-    path = events_path(run_id)
-    if not path.exists():
-        return []
-    out: list[dict] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        if int(event.get("seq") or 0) > after:
-            out.append(event)
-    return out

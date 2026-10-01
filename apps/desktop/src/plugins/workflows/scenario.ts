@@ -54,9 +54,9 @@ export interface StepDef {
 //   agent -> a kanban row dispatched to a profile (assignee + body + overrides)
 //   gate  -> an orchestrator that inspects child summaries and re-delegates
 //
-// Capability wiring is not on this list and never will be. An agent reaches for
-// tools, skills, and MCP servers by itself; what it may reach for belongs to
-// the profile. The canvas orchestrates, it doesn't provision.
+// Capability wiring is the profile's. An agent reaches for tools, skills, and MCP
+// servers by itself; `toolsets` only narrows that for one step — the guard rail
+// for a step a webhook or an event can start with text nobody vetted.
 //
 // Nor is the output contract. A step knows what it feeds — the graph says so —
 // so the backend templates the hand-off prompt from the downstream step's goal.
@@ -83,6 +83,28 @@ export interface StepConfig {
   until?: WaitUntil
   /** trigger: what starts a run. Mid-run holds stay on `until`. */
   on?: TriggerOn
+  /** A step with several inputs: wait for every one (`all`, the default) or
+   *  start on the first to arrive (`any`). */
+  join?: Join
+  /** human: chats that are also asked — `send_message` targets (`telegram`,
+   *  `discord:#ops`). The answer can come back from any of them. */
+  notify?: string[]
+  /** agent: the toolsets this step may use. Empty is the profile's own set. */
+  toolsets?: string[]
+  /** agent: an output frozen on the step. While it's set the step answers with
+   *  it and nothing runs — re-runs and loops downstream reuse it. */
+  pin?: PinnedOutput
+  /** trigger: the payload a run started by hand uses, so a webhook or event
+   *  workflow can be tried without a real delivery. */
+  pinPayload?: Record<string, unknown>
+}
+
+export type Join = 'all' | 'any'
+
+export interface PinnedOutput {
+  summary: string
+  verdict: 'PASS' | 'FAIL' | null
+  output: Record<string, unknown>
 }
 
 /** Which of those knobs each kind ACTUALLY has — the closed part of the schema.
@@ -101,21 +123,36 @@ export interface StepConfig {
  *  hold a knob its kind doesn't have and the canvas can't show one. */
 export const KIND_FIELDS = {
   // A model runs it: everything about how hard it may try.
-  agent: ['title', 'goal', 'profile', 'model', 'blind', 'maxIterations', 'maxRetries', 'timeoutMins', 'onFail'],
+  agent: [
+    'title',
+    'goal',
+    'profile',
+    'model',
+    'toolsets',
+    'blind',
+    'join',
+    'maxIterations',
+    'maxRetries',
+    'timeoutMins',
+    'onFail',
+    'pin'
+  ],
   // A person runs it. Same contract, but the brain is a person: no model, no
   // iteration budget, and no retries — you don't re-dispatch someone. It fails
   // one way, by nobody answering, which is the timeout and what follows it.
-  human: ['title', 'goal', 'assignee', 'timeoutMins', 'onFail'],
+  human: ['title', 'goal', 'assignee', 'notify', 'join', 'timeoutMins', 'onFail'],
   // Control. A gate reads verdicts that already exist, so it spends nothing and
   // has no attempt to lose: no budgets, no on-failure. Its arms ARE its
   // instruction, which is why there's no goal beside them to drift from it.
   gate: ['title', 'arms', 'maxLoops'],
   // Control. The world decides, so the step holds no opinion at all beyond what
   // it's holding out for.
-  wait: ['title', 'until'],
-  // Entry only. Play is always a start; cron/webhook/event reuse Hermes
-  // surfaces that already exist rather than growing a second listener stack.
-  trigger: ['title', 'on']
+  wait: ['title', 'until', 'join'],
+  // Entry only, and a workflow may have several: the one that fires starts the
+  // run and the rest stay dormant for it. Play starts the manual ones; cron and
+  // webhook reuse Hermes surfaces that already exist, and an event trigger
+  // listens for any Hermes or outside event by name.
+  trigger: ['title', 'on', 'pinPayload']
 } as const satisfies Record<StepKind, readonly (keyof StepConfig)[]>
 
 export type KindField = (typeof KIND_FIELDS)[StepKind][number]
@@ -136,7 +173,12 @@ export const FIELD_LABEL: Record<KindField, string> = {
   arms: 'routing rules',
   assignee: 'assignee',
   until: 'wait condition',
-  on: 'start condition'
+  on: 'start condition',
+  join: 'join',
+  notify: 'chats to ask',
+  toolsets: 'toolsets',
+  pin: 'pinned output',
+  pinPayload: 'test payload'
 }
 
 /** Does this kind have this knob? The one question every consumer asks. */
@@ -172,7 +214,11 @@ export interface WaitUntil {
 
 export const WAIT_KIND_OPTIONS: { value: WaitKind; label: string; hint: string }[] = [
   { value: 'timer', label: 'Timer', hint: 'e.g. 24h — the run resumes when it elapses' },
-  { value: 'event', label: 'Event', hint: 'e.g. github.pull_request.merged' },
+  {
+    value: 'event',
+    label: 'Event',
+    hint: 'An event name or glob, e.g. github.pull_request.* or workflow.run.finished'
+  },
   { value: 'poll', label: 'Poll', hint: 'GET a URL until it answers, e.g. every 30s https://…' }
 ]
 
@@ -188,7 +234,11 @@ export const TRIGGER_KIND_OPTIONS: { value: TriggerKind; label: string; hint: st
   { value: 'manual', label: 'Manual', hint: 'Play on the canvas starts it' },
   { value: 'cron', label: 'Cron', hint: 'e.g. every 2h — Hermes cron fires it' },
   { value: 'webhook', label: 'Webhook', hint: 'A URL you can point GitHub, Stripe, or anything at' },
-  { value: 'event', label: 'Event', hint: 'e.g. github.pull_request.merged' }
+  {
+    value: 'event',
+    label: 'Event',
+    hint: 'An event name or glob: github.pull_request.*, hermes.session.ended, hermes.tool.terminal, workflow.run.finished'
+  }
 ]
 
 // ---------------------------------------------------------------------------

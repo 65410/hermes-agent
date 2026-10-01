@@ -445,7 +445,19 @@
   .ask-back:hover {
     background: color-mix(in srgb, var(--scenario-warn) 16%, transparent);
   }
-  .ask-back .codicon {
+  .ask-back .codicon,
+  .run-note .codicon {
     font-size: 12px;
+  }
+
+  /* A run that leaves no history (traces are off): said once, quietly, where the transport is. */
+  .run-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    margin-bottom: 2px;
+    color: var(--ui-text-tertiary);
+    font-size: var(--fs-caption);
   }
 }

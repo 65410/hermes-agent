@@ -25,7 +25,7 @@ def test_requires_callback():
 
 
 def test_run_does_not_need_the_canvas(tmp_path, monkeypatch):
-    """A run is the gateway walking the stored graph, not a renderer round-trip."""
+    """A run is the workflow reactor walking the stored graph, not a renderer round-trip."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from workflow.store import save_documents
 
@@ -42,22 +42,13 @@ def test_run_does_not_need_the_canvas(tmp_path, monkeypatch):
         ],
         "job",
     )
-    from workflow import runner
-
-    monkeypatch.setattr(
-        runner,
-        "_execute_fn",
-        lambda goal, context, payload, config: {
-            "ok": True,
-            "summary": "ok",
-            "verdict": "PASS",
-            "output": {},
-        },
-    )
     result = call(action="run", workflow="job")
     assert "error" not in result
-    assert result["runId"]
-    assert result["workflow"] == "job"
+    assert result["workflow"] == "job" and result["status"] == "queued"
+    from workflow import events
+
+    (start,) = events.drain()
+    assert start["name"] == events.START and start["payload"]["runId"] == result["runId"]
 
 
 def test_run_needs_a_workflow():
