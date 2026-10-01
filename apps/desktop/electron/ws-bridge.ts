@@ -27,7 +27,6 @@
 //     owns the deadline).
 //   - Every socket/dial owned by a destroyed WebContents is torn down with it.
 import type { IpcMain, WebContents } from 'electron'
-
 import WebSocket from 'ws'
 
 // `electron` is a type-only import: the runtime value (ipcMain) is injected
@@ -81,7 +80,8 @@ const CHANNEL_EVENT = 'hermes:ws-bridge:event'
 function defaultIpcMain(): Pick<IpcMain, 'handle'> {
   // Lazy require keeps `electron` out of the module graph under node:test.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return (require('electron') as typeof import('electron')).ipcMain
+  const electron = require('electron') as { ipcMain: Pick<IpcMain, 'handle'> }
+  return electron.ipcMain
 }
 
 export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
@@ -103,8 +103,10 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
    * promote the retired ws into the live map (token-reuse ABA). */
   const ownsToken = (ws: WebSocketLike, token: string): boolean => {
     const live = sockets.get(token)
-    if (live) return live.ws === ws
+
+    if (live) {return live.ws === ws}
     const dial = pendingDials.get(token)
+
     return dial !== undefined && dial.ws === ws
   }
 
@@ -124,14 +126,18 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
    *  terminate killed every dial 6ms after open — the "flapping" loop). */
   const finalizeDial = (token: string, result: { ok: boolean; error?: string }): PendingDial | null => {
     const dial = pendingDials.get(token)
-    if (!dial || dial.settled) return null
+
+    if (!dial || dial.settled) {return null}
     dial.settled = true
     clearTimeout(dial.watchdog)
     pendingDials.delete(token)
+
     if (!result.ok) {
       try { dial.ws.terminate() } catch { /* already gone */ }
     }
+
     dial.settle(result)
+
     return dial
   }
 
@@ -139,9 +145,11 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
     for (const [token, entry] of sockets) {
       if (entry.sender === sender) {
         sockets.delete(token)
+
         try { entry.ws.terminate() } catch { /* already gone */ }
       }
     }
+
     for (const [token, dial] of [...pendingDials]) {
       if (dial.sender === sender) {
         finalizeDial(token, { ok: false, error: 'Renderer destroyed during connect' })
@@ -150,7 +158,7 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
   }
 
   const watchSender = (sender: WebContents) => {
-    if (retiredSenders.has(sender)) return
+    if (retiredSenders.has(sender)) {return}
     retiredSenders.add(sender)
     sender.once('destroyed', () => retireOwned(sender))
   }
@@ -158,10 +166,13 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
   function install(): void {
     ipc.handle('hermes:ws-bridge:open', (event, url: string, token: string): Promise<{ ok: boolean; error?: string }> => {
       const sender = event.sender
+
       if (typeof token !== 'string' || token.length === 0 || pendingDials.has(token) || sockets.has(token)) {
         return Promise.resolve({ ok: false, error: 'invalid dial token' })
       }
+
       let ws: WebSocketLike
+
       try {
         ws = new WsImpl(url, {
           headers: headersForUrl(url),
@@ -172,6 +183,7 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
       }
 
       let dial: PendingDial
+
       const openPromise = new Promise<{ ok: boolean; error?: string }>(resolve => {
         dial = {
           ws,
@@ -184,6 +196,7 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
           }, connectTimeoutMs)
         }
       })
+
       pendingDials.set(token, dial!)
       watchSender(sender)
 
@@ -193,13 +206,18 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
           // covers token reuse: a retired ws may open after a newer dial
           // took the token, and must not hijack the replacement.
           try { ws.terminate() } catch { /* already gone */ }
+
           return
         }
+
         const d = finalizeDial(token, { ok: true })
+
         if (!d) {
           try { ws.terminate() } catch { /* already gone */ }
+
           return
         }
+
         sockets.set(token, { ws, sender })
         // Resolve happened in finalizeDial; emit open deferred past the
         // renderer's promise microtask so its bookkeeping lands first —
@@ -207,18 +225,18 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
         setImmediate(() => sendTo(sender, token, { type: 'open' }))
       })
       ws.on('message', (data: Buffer | string, isBinary: boolean) => {
-        if (!ownsToken(ws, token)) return
+        if (!ownsToken(ws, token)) {return}
         sendTo(sender, token, { type: 'message', data: isBinary ? data.toString('base64') : String(data), binary: isBinary })
       })
       ws.on('error', (err: Error) => {
-        if (!ownsToken(ws, token)) return
+        if (!ownsToken(ws, token)) {return}
         sendTo(sender, token, { type: 'error', message: err.message })
       })
       ws.on('close', (code: number, reason: Buffer) => {
         // Identity, not just the token: after a cancel the token can be
         // rebound to a newer dial, and this retired socket's late close must
         // not finalize the replacement's dial or delete its live entry.
-        if (!ownsToken(ws, token)) return
+        if (!ownsToken(ws, token)) {return}
         sockets.delete(token)
         sendTo(sender, token, { type: 'close', code, reason: reason.toString() })
         finalizeDial(token, { ok: false, error: `WebSocket closed during connect (code ${code})` })
@@ -232,24 +250,32 @@ export function createWebSocketBridge(deps: WebSocketBridgeDeps = {}) {
     // receives its terminal receipt ({ ok: false }) instead of hanging forever.
     ipc.handle('hermes:ws-bridge:cancel', (event, token: string) => {
       const dial = pendingDials.get(token)
-      if (!dial || dial.sender !== event.sender) return { ok: false }
+
+      if (!dial || dial.sender !== event.sender) {return { ok: false }}
       finalizeDial(token, { ok: false, error: 'Dial canceled by renderer' })
+
       return { ok: true }
     })
 
     ipc.handle('hermes:ws-bridge:send', (event, token: string, data: string, binary: boolean) => {
       const entry = sockets.get(token)
-      if (!entry || entry.sender !== event.sender) return { ok: false }
-      if (entry.ws.readyState !== 1) return { ok: false }
+
+      if (!entry || entry.sender !== event.sender) {return { ok: false }}
+
+      if (entry.ws.readyState !== 1) {return { ok: false }}
       entry.ws.send(binary ? Buffer.from(data, 'base64') : data)
+
       return { ok: true }
     })
 
     ipc.handle('hermes:ws-bridge:close', (event, token: string, code?: number, reason?: string) => {
       const entry = sockets.get(token)
-      if (!entry || entry.sender !== event.sender) return { ok: false }
+
+      if (!entry || entry.sender !== event.sender) {return { ok: false }}
       sockets.delete(token)
+
       try { entry.ws.close(code, reason) } catch { /* already gone */ }
+
       return { ok: true }
     })
   }

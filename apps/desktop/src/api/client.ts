@@ -1,9 +1,8 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 import { map, type MapStore } from 'nanostores'
 
-import type { HermesApiRequest } from '@/global'
-
 import { gatewaySocketFactory } from '@/api/ws-bridge-socket'
+import type { HermesApiRequest } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a

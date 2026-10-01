@@ -32,22 +32,27 @@ function makeBridgeApi() {
   const api = {
     wsBridgeOpen: (url: string, token: string) => {
       calls.push({ method: 'open', args: [url, token] })
+
       return new Promise<{ ok: boolean; error?: string }>(resolve => pendingOpens.set(token, resolve))
     },
     wsBridgeCancel: (token: string) => {
       calls.push({ method: 'cancel', args: [token] })
+
       return Promise.resolve({ ok: true })
     },
     wsBridgeSend: (token: string, data: string, binary: boolean) => {
       calls.push({ method: 'send', args: [token, data, binary] })
+
       return Promise.resolve({ ok: true })
     },
     wsBridgeClose: (token: string, code?: number, reason?: string) => {
       calls.push({ method: 'close', args: [token, code, reason] })
+
       return Promise.resolve({ ok: true })
     },
     onWsBridgeEvent: (cb: (token: string, payload: { type: string; data?: string; code?: number; reason?: string }) => void) => {
       listeners.add(cb)
+
       return () => listeners.delete(cb)
     }
   }
@@ -59,7 +64,7 @@ function makeBridgeApi() {
     resolveOpen: (token: string, result: { ok: boolean; error?: string } = { ok: true }) =>
       pendingOpens.get(token)!(result),
     emit: (token: string, payload: { type: string; data?: string; code?: number; reason?: string }) => {
-      for (const cb of [...listeners]) cb(token, payload)
+      for (const cb of [...listeners]) {cb(token, payload)}
     }
   }
 }
@@ -69,6 +74,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 function tokenOf(calls: RecordedCall[], method = 'open'): string {
   const call = calls.find(c => c.method === method)
   assert.ok(call, `expected ${method} call`)
+
   return call!.args[1] as string ?? call!.args[0] as string
 }
 

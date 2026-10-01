@@ -28,6 +28,7 @@ import { createWebSocketBridge, type WsLike } from './ws-bridge'
 
 function makeFakeIpc() {
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
+
   return {
     handlers,
     ipc: { handle: (channel: string, fn: (...args: unknown[]) => unknown) => void handlers.set(channel, fn) } as never
@@ -37,6 +38,7 @@ function makeFakeIpc() {
 function makeSender(label: string) {
   const sent: Array<{ token: string; payload: unknown }> = []
   const listeners = new Map<string, Array<() => void>>()
+
   return {
     label,
     sent,
@@ -47,7 +49,8 @@ function makeSender(label: string) {
     once(event: string, fn: () => void) { (listeners.get(event) ?? listeners.set(event, []).get(event)!).push(fn) },
     destroy() {
       this.destroyed = true
-      for (const fn of listeners.get('destroyed') ?? []) fn()
+
+      for (const fn of listeners.get('destroyed') ?? []) {fn()}
     }
   }
 }
@@ -73,7 +76,7 @@ function makeWsFactory() {
       (this.listeners.get(event) ?? this.listeners.set(event, []).get(event)!).push(fn)
     }
     private emit(event: string, ...args: unknown[]) {
-      for (const fn of this.listeners.get(event) ?? []) fn(...(args as never[]))
+      for (const fn of this.listeners.get(event) ?? []) {fn(...(args as never[]))}
     }
     send(data: unknown) { this.sent.push(data) }
     close() { this.closed = true; this.readyState = 3 }
@@ -211,11 +214,13 @@ test('repeated dials from one sender register a single destroyed listener', asyn
   createWebSocketBridge({ ipc, webSocketImpl: FakeWs as never }).install()
 
   const sender = makeSender('a')
+
   for (let i = 0; i < 3; i++) {
     void (handlers.get('hermes:ws-bridge:open')!({ sender }, 'wss://gw.example/api/ws', `tok-loop-${i}`) as Promise<unknown>)
     instances[i].simulateOpen()
     await nextTick()
   }
+
   // watchSender dedupes via WeakSet: exactly one destroyed hook per WebContents.
   assert.equal(sender.destroyedListenerCount, 1)
 })

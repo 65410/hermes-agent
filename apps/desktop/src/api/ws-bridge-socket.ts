@@ -35,6 +35,7 @@ interface BridgePayload {
 
 function bridgeApi(): BridgeApi | null {
   const api = (window as unknown as { hermesDesktop?: Partial<BridgeApi> }).hermesDesktop
+
   return api && typeof api.wsBridgeOpen === 'function' ? (api as BridgeApi) : null
 }
 
@@ -61,16 +62,18 @@ export class BridgedWebSocket extends EventTarget {
       // rejected from the start, including anything arriving before open
       // resolved (the bridge emits open only after resolving, so ordering
       // is: open-result promise, then events, all under our token).
-      if (token !== this.token) return
+      if (token !== this.token) {return}
       this.dispatch(payload)
     })
 
     void api.wsBridgeOpen(url, this.token).then(result => {
       if (this.terminated) {
         // close() raced the dial resolution: if it opened anyway, shut it.
-        if (result.ok) void this.api.wsBridgeClose(this.token)
+        if (result.ok) {void this.api.wsBridgeClose(this.token)}
+
         return
       }
+
       if (!result.ok) {
         this.terminate()
         this.readyState = 3
@@ -83,7 +86,7 @@ export class BridgedWebSocket extends EventTarget {
   }
 
   private terminate(): void {
-    if (this.terminated) return
+    if (this.terminated) {return}
     this.terminated = true
     this.removeListener()
   }
@@ -93,47 +96,61 @@ export class BridgedWebSocket extends EventTarget {
       case 'open':
         this.readyState = 1
         this.dispatchEvent(new Event('open'))
+
         break
+
       case 'message':
         this.dispatchEvent(
           new MessageEvent('message', {
             data: payload.binary ? base64ToArrayBuffer(payload.data ?? '') : (payload.data ?? '')
           })
         )
+
         break
+
       case 'error':
         this.dispatchEvent(new Event('error'))
+
         break
+
       case 'close':
         this.terminate()
         this.readyState = 3
         this.dispatchEvent(new CloseEvent('close', { code: payload.code ?? 1006, reason: payload.reason ?? '' }))
+
         break
     }
   }
 
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-    if (this.readyState !== 1 || this.terminated) return
+    if (this.readyState !== 1 || this.terminated) {return}
+
     if (typeof data === 'string') {
       void this.api.wsBridgeSend(this.token, data, false)
+
       return
     }
+
     if (data instanceof ArrayBuffer) {
       void this.api.wsBridgeSend(this.token, arrayBufferToBase64(data), true)
+
       return
     }
+
     if (ArrayBuffer.isView(data)) {
       void this.api.wsBridgeSend(this.token, arrayBufferToBase64(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer), true)
+
       return
     }
+
     // Blob: async read then send.
     void (data as Blob).arrayBuffer().then((buf: ArrayBuffer) => {
-      if (this.readyState === 1 && !this.terminated) void this.api.wsBridgeSend(this.token, arrayBufferToBase64(buf), true)
+      if (this.readyState === 1 && !this.terminated) {void this.api.wsBridgeSend(this.token, arrayBufferToBase64(buf), true)}
     })
   }
 
   close(code?: number, reason?: string): void {
-    if (this.readyState >= 2) return
+    if (this.readyState >= 2) {return}
     this.readyState = 2
     this.terminate()
     // Cancel covers a still-dialing token; close covers an established one —
@@ -147,14 +164,18 @@ export class BridgedWebSocket extends EventTarget {
 function base64ToArrayBuffer(b64: string): ArrayBuffer {
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+
+  for (let i = 0; i < bin.length; i++) {bytes[i] = bin.charCodeAt(i)}
+
   return bytes.buffer
 }
 
 function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf)
   let bin = ''
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+
+  for (let i = 0; i < bytes.length; i++) {bin += String.fromCharCode(bytes[i])}
+
   return btoa(bin)
 }
 
@@ -208,8 +229,10 @@ export function shouldBridgeWebSocket(url: string): boolean {
  *  process (private-CA trust), keep native WebSocket for cleartext loopback. */
 export function gatewaySocketFactory(url: string): WebSocket {
   const api = bridgeApi()
+
   if (api && shouldBridgeWebSocket(url)) {
     return new BridgedWebSocket(url, api) as unknown as WebSocket
   }
+
   return new WebSocket(url)
 }
