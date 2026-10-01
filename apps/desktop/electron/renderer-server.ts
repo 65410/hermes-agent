@@ -5,6 +5,10 @@ import path from 'node:path'
 
 const DEFAULT_PORT = 47891
 
+// A script-free document on the renderer origin. The storage migration loads it
+// to write localStorage under this origin without booting the app.
+const BLANK_PATH = '/__hermes/blank.html'
+
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.gif': 'image/gif',
@@ -85,6 +89,13 @@ async function startRendererServer(
       return
     }
 
+    if (request.url === BLANK_PATH) {
+      response.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': MIME_TYPES['.html'] })
+      response.end(request.method === 'HEAD' ? undefined : '<!doctype html>')
+
+      return
+    }
+
     const requested = rendererRequestPath(root, request.url || '/')
 
     if (!requested) {
@@ -147,5 +158,5 @@ async function startRendererServer(
   }
 }
 
-export { DEFAULT_PORT, rendererRequestPath, startRendererServer }
+export { BLANK_PATH, DEFAULT_PORT, rendererRequestPath, startRendererServer }
 export type { RendererServer }

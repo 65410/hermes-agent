@@ -9,7 +9,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 const nodeRequire = createRequire(import.meta.url)
-const { rendererRequestPath, startRendererServer } = nodeRequire('./renderer-server.ts')
+const { BLANK_PATH, rendererRequestPath, startRendererServer } = nodeRequire('./renderer-server.ts')
 
 test('serves the packaged renderer from a loopback HTTP origin', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-'))
@@ -80,6 +80,21 @@ test('falls back to an ephemeral port when the requested port is taken', async t
   assert.equal(index.status, 200)
   assert.equal(await index.text(), '<main>Hermes</main>')
   assert.equal(await (await fetch(`http://127.0.0.1:${takenPort}/`)).text(), 'squatter')
+})
+
+test('serves a script-free blank document for the storage migration', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-'))
+  fs.writeFileSync(path.join(root, 'index.html'), '<script src="app.js"></script>')
+  const server = await startRendererServer(root, { port: 0 })
+
+  t.onTestFinished(async () => {
+    await server.close()
+    fs.rmSync(root, { force: true, recursive: true })
+  })
+
+  const blank = await fetch(`${server.origin}${BLANK_PATH}`)
+  assert.equal(blank.status, 200)
+  assert.equal(await blank.text(), '<!doctype html>')
 })
 
 test('rejects paths outside the renderer root', () => {
