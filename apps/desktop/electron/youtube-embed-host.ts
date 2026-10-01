@@ -14,8 +14,9 @@
  * The server starts lazily on the first embed that needs it (so it can never
  * delay or abort app startup), binds 127.0.0.1 only on an ephemeral port, and
  * serves nothing but a static page for a well-formed video id: no proxying,
- * no files, every other request is 404. A bind failure resolves to null and
- * the renderer degrades that embed to a plain link.
+ * no files, every other request (wrong Host, absolute-form or malformed
+ * target) is 404. A bind failure resolves to null, so the renderer degrades
+ * that embed to a plain link, and the next embed retries the bind.
  */
 
 import http from 'node:http'
@@ -40,8 +41,11 @@ const PAGE_HEADERS = {
 
 /** The host page for `requestUrl`, or null when it is not a well-formed embed request. */
 function youtubeEmbedHostPage(requestUrl: string, origin: string): null | string {
-  const url = new URL(requestUrl, origin)
-  const id = EMBED_PATH_RE.exec(url.pathname)?.[1]
+  // Plain string split: `new URL()` throws on targets like `//[`.
+  const queryAt = requestUrl.indexOf('?')
+  const path = queryAt === -1 ? requestUrl : requestUrl.slice(0, queryAt)
+  const query = queryAt === -1 ? '' : requestUrl.slice(queryAt + 1)
+  const id = EMBED_PATH_RE.exec(path)?.[1]
 
   if (!id) {
     return null
@@ -52,7 +56,7 @@ function youtubeEmbedHostPage(requestUrl: string, origin: string): null | string
   player.searchParams.set('rel', '0')
   player.searchParams.set('origin', origin)
 
-  const start = url.searchParams.get('start')
+  const start = new URLSearchParams(query).get('start')
 
   if (start && START_RE.test(start)) {
     player.searchParams.set('start', start)
@@ -80,8 +84,13 @@ export function installYouTubeEmbedHost(log: (message: string) => void): void {
   const start = () =>
     new Promise<null | string>(resolve => {
       const candidate = http.createServer((req, res) => {
-        const origin = `http://127.0.0.1:${(candidate.address() as AddressInfo).port}`
-        const page = req.method === 'GET' || req.method === 'HEAD' ? youtubeEmbedHostPage(req.url || '/', origin) : null
+        const host = `127.0.0.1:${(candidate.address() as AddressInfo).port}`
+
+        // The Host check rejects DNS-rebound names; absolute-form targets fail the path match.
+        const page =
+          (req.method === 'GET' || req.method === 'HEAD') && req.headers.host === host
+            ? youtubeEmbedHostPage(req.url || '/', `http://${host}`)
+            : null
 
         if (page === null) {
           res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found')
@@ -94,6 +103,7 @@ export function installYouTubeEmbedHost(log: (message: string) => void): void {
 
       candidate.on('error', (error: NodeJS.ErrnoException) => {
         log(`[youtube-embed] loopback host unavailable (${error.code || error.message}); embeds fall back to links`)
+        starting = null
         resolve(null)
       })
       candidate.listen({ host: '127.0.0.1', port: 0 }, () => {

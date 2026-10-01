@@ -19,6 +19,20 @@ vi.mock('electron', () => ({
 
 const { installYouTubeEmbedHost } = await import('./youtube-embed-host')
 
+/** Status for a raw request target and Host header, which fetch() cannot send. */
+function rawStatus(origin: string, target: string, host = new URL(origin).host): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const { port } = new URL(origin)
+
+    http
+      .get({ headers: { Host: host }, host: '127.0.0.1', path: target, port, setHost: false }, res => {
+        res.resume()
+        resolve(res.statusCode)
+      })
+      .on('error', reject)
+  })
+}
+
 function install() {
   handlers.clear()
   quitListeners.length = 0
@@ -58,12 +72,21 @@ describe('YouTube embed host', () => {
       '/youtube-embed/%3Cscript%3E1',
       '/youtube-embed/../index.html',
       '/https://evil.example/',
-      '/favicon.ico'
+      '/favicon.ico',
+      '//',
+      '//['
     ]
 
     for (const path of rejected) {
-      expect((await fetch(`${origin}${path}`)).status, path).toBe(404)
+      expect(await rawStatus(origin!, path), path).toBe(404)
     }
+
+    // Absolute-form targets and foreign Host headers (DNS rebinding) never get the page.
+    expect(await rawStatus(origin!, '/youtube-embed/jNQXAC9IVRw')).toBe(200)
+    expect(await rawStatus(origin!, `${origin}/youtube-embed/jNQXAC9IVRw`)).toBe(404)
+    expect(await rawStatus(origin!, 'http://evil.example/youtube-embed/jNQXAC9IVRw', 'evil.example')).toBe(404)
+    expect(await rawStatus(origin!, '/youtube-embed/jNQXAC9IVRw', 'rebind.attacker.example')).toBe(404)
+    expect(await rawStatus(origin!, '/youtube-embed/jNQXAC9IVRw', `localhost:${new URL(origin!).port}`)).toBe(404)
 
     expect((await fetch(`${origin}/youtube-embed/jNQXAC9IVRw`, { method: 'POST' })).status).toBe(404)
 
@@ -71,18 +94,20 @@ describe('YouTube embed host', () => {
     expect(injected).not.toContain('<script')
   })
 
-  it('degrades to null when the listener cannot bind and closes on quit', async () => {
+  it('degrades to null when the listener cannot bind, retries on the next embed, and closes on quit', async () => {
     vi.spyOn(http.Server.prototype, 'listen').mockImplementationOnce(function (this: http.Server) {
       queueMicrotask(() => this.emit('error', Object.assign(new Error('bind'), { code: 'EADDRNOTAVAIL' })))
 
       return this
     })
 
-    await expect(install()()).resolves.toBeNull()
+    const getOrigin = install()
+    await expect(getOrigin()).resolves.toBeNull()
 
     vi.restoreAllMocks()
-    const origin = await install()()
-    await fetch(`${origin}/youtube-embed/jNQXAC9IVRw`)
+    const origin = await getOrigin()
+    expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    expect((await fetch(`${origin}/youtube-embed/jNQXAC9IVRw`)).status).toBe(200)
     quitListeners.forEach(quit => quit())
 
     await expect(fetch(`${origin}/youtube-embed/jNQXAC9IVRw`)).rejects.toThrow()
