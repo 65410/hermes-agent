@@ -802,6 +802,7 @@ function durableFoldCoversLiveResponse(folds: ChatMessage[], live: ChatMessage, 
   }
 
   const carriesEveryText = liveTexts.every(text => folds.some(fold => foldCarriesText(fold, text)))
+
   const answerNotBehind =
     Boolean(answer) &&
     folds.some(fold => {

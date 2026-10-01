@@ -15,8 +15,8 @@
  * drift on the next page.
  */
 
-import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
+import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   recordTranscriptBackfillPage,
@@ -298,6 +298,7 @@ function storedRowLogicalKey(message: ChatMessage): string {
 function reidRetiredRowIds(previous: ChatMessage[], refreshedTail: ChatMessage[]): Set<number> {
   const previousRowIds = durableRowIds(previous)
   const shared = refreshedTail.filter(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+
   const overlapFrom = shared.length
     ? Math.min(...shared.map(message => message.rowId as number))
     : Number.POSITIVE_INFINITY
@@ -485,6 +486,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   // already committed must not paint below their own committed rows — the
   // pinned tail of #126229. Uncovered live rows keep their trailing slot.
   const coveredLiveRows = new Set(previousTrailing.filter(row => pageCoversLiveRow(row, refreshedTail)))
+
   const previousLiveRows = coveredLiveRows.size
     ? previousTrailing.filter(row => !coveredLiveRows.has(row))
     : previousTrailing
