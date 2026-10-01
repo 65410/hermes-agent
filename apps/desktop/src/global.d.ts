@@ -406,6 +406,9 @@ declare global {
       ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      // http://127.0.0.1:<port> origin serving YouTube player host pages, or
+      // null when the loopback listener could not bind (embeds become links).
+      youtubeEmbedOrigin?: () => Promise<null | string>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,

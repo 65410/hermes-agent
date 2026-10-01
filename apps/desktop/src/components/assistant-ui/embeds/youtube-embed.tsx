@@ -1,6 +1,8 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useState } from 'react'
+
+import { PrettyLink } from '@/lib/external-link'
 
 import type { FrameEmbed } from './providers/types'
 import { useIsDark } from './use-is-dark'
@@ -25,10 +27,62 @@ function youtubeSrc(embedUrl: string): string {
   return url.toString()
 }
 
+// The packaged renderer is a file:// document, which YouTube refuses to embed
+// into (no Referer → error 153). Electron serves a loopback page that frames
+// the player from a real http origin (electron/youtube-embed-host.ts).
+function hostedYouTubeSrc(embedUrl: string, hostOrigin: string): string {
+  const player = new URL(embedUrl)
+  const hosted = new URL(`/youtube-embed/${player.pathname.split('/').pop()}`, hostOrigin)
+  const start = player.searchParams.get('start')
+
+  if (start) {
+    hosted.searchParams.set('start', start)
+  }
+
+  return hosted.toString()
+}
+
+// undefined while asking Electron for the host; null when it could not bind.
+function usePlayerSrc(embedUrl: string): null | string | undefined {
+  const resolveHostOrigin = window.hermesDesktop?.youtubeEmbedOrigin
+  const [hostOrigin, setHostOrigin] = useState<null | string | undefined>(undefined)
+
+  useEffect(() => {
+    if (!resolveHostOrigin) {
+      return
+    }
+
+    let live = true
+
+    void resolveHostOrigin()
+      .catch(() => null)
+      .then(origin => live && setHostOrigin(origin))
+
+    return () => {
+      live = false
+    }
+  }, [resolveHostOrigin])
+
+  // No desktop bridge (renderer opened in a plain browser): frame directly.
+  if (!resolveHostOrigin) {
+    return youtubeSrc(embedUrl)
+  }
+
+  return hostOrigin && hostedYouTubeSrc(embedUrl, hostOrigin)
+}
+
 // Keep this as a plain iframe and let YouTube render its native player/error UI.
 export default function YouTubeEmbedRenderer({ descriptor }: { descriptor: FrameEmbed }) {
   const isDark = useIsDark()
-  const src = useMemo(() => youtubeSrc(descriptor.embedUrl), [descriptor.embedUrl])
+  const src = usePlayerSrc(descriptor.embedUrl)
+
+  if (src === null) {
+    return <PrettyLink className="wrap-anywhere" href={descriptor.sourceUrl} />
+  }
+
+  if (src === undefined) {
+    return <span className="block aspect-video w-full" />
+  }
 
   // Width is capped to the ratio by UrlEmbed, so aspect-video sizes height ≤ cap.
   return (

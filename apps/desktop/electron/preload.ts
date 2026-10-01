@@ -406,6 +406,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  // Loopback origin that hosts YouTube players (null when it could not bind).
+  youtubeEmbedOrigin: () => ipcRenderer.invoke('hermes:youtube-embed:origin'),
   mcpOauth: {
     // One-shot loopback listener for MCP OAuth against remote backends: bind
     // on this machine, hand redirectUri to mcp.servers.oauth.start, then wait
