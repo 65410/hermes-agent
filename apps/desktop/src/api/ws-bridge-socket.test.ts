@@ -199,3 +199,28 @@ test('shouldBridgeWebSocket: loopback ws:// keeps the native renderer WebSocket'
     assert.equal(shouldBridgeWebSocket(url), false, url)
   }
 })
+
+// #98988's exhibit (Cloudflare-fronted remote gateway): Chromium's renderer
+// WebSocket dials /api/ws over RFC 8441 HTTP/2 Extended CONNECT, the cookie
+// gate sees a plain HTTP request to a non-public path and answers JSON 401
+// before the WS handler runs — the "Test remote passed, chat still says
+// Could not connect" split. The renderer must never dial such a URL with
+// Chromium's socket: it routes through main's node:tls `ws` dial
+// (HTTP/1.1 Upgrade), which is why shouldBridgeWebSocket matches on scheme
+// and loopback only, never on the /api/ws path shape.
+test('shouldBridgeWebSocket: a Cloudflare-fronted remote wss:// gateway dials through main, not Chromium (#98988)', () => {
+  const remote = [
+    'wss://gw.example.com/api/ws?ticket=t', // remote host, ticket auth
+    'wss://hermes.example.com/api/ws', // #98988's exact shape: non-loopback /api/ws
+    'ws://office-gw.internal:9443/api/ws' // plain-ws remote (HTTP/2 CONNECT peer)
+  ]
+
+  for (const url of remote) {
+    assert.equal(shouldBridgeWebSocket(url), true, url)
+  }
+
+  // The loopback exemption is what keeps local backends on the native socket —
+  // #98988 keeps `hermes serve` loopback dials in the renderer too.
+  assert.equal(shouldBridgeWebSocket('ws://127.0.0.1:52515/api/ws?token=t'), false)
+  assert.equal(shouldBridgeWebSocket('ws://localhost:9/api/ws'), false)
+})
