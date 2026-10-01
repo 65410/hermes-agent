@@ -535,7 +535,7 @@ import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
-import { startRendererServer } from './renderer-server'
+import { rendererPortFor, startRendererServer } from './renderer-server'
 import { migrateLegacyRendererStorage } from './renderer-storage-migration'
 import { isRendererUrl } from './renderer-url'
 import { fetchRosterSourceData } from './roster-source-fetch'
@@ -19372,7 +19372,9 @@ app.whenReady().then(async () => {
   // see renderer-server.ts) before any window loads it. In dev the Vite dev
   // server already provides the origin.
   if (!DEV_SERVER) {
-    packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
+    packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()), {
+      port: rendererPortFor(app.getPath('userData'), !(USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX))
+    })
     // A WebContentsView, not a hidden BrowserWindow: destroying the only window
     // would fire window-all-closed, which quits on Windows/Linux. Keep the view
     // referenced — once it is collected, its webContents is destroyed mid-load.

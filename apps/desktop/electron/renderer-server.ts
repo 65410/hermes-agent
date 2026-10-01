@@ -135,28 +135,52 @@ async function startRendererServer(
     }
   })
 
-  // Prefer the stable default port: the renderer's origin keys its localStorage /
+  // Prefer a stable port: the renderer's origin keys its localStorage /
   // sessionStorage, so a port that changed between launches would silently orphan
-  // persisted renderer state. But a taken port must never block startup — main.ts
-  // awaits this before createWindow(), so rejecting here means no window at all.
-  // Fall back to an OS-assigned ephemeral port instead.
-  let address: AddressInfo
+  // persisted renderer state. A taken port tries a few fixed neighbours first, so
+  // a squatter costs one migration, not settings on every launch. It must never
+  // block startup — main.ts awaits this before createWindow(), so rejecting here
+  // means no window at all — so the last resort is an OS-assigned ephemeral port.
+  const candidates = port === 0 ? [0] : [port, port + 1, port + 2, port + 3, 0]
+  let address: AddressInfo | undefined
 
-  try {
-    address = await listenOnce(server, port)
-  } catch (error) {
-    if (port === 0 || !isPortCollision(error)) {
-      throw error
+  for (const candidate of candidates) {
+    try {
+      address = await listenOnce(server, candidate)
+
+      break
+    } catch (error) {
+      if (candidate === 0 || !isPortCollision(error)) {
+        throw error
+      }
     }
-
-    address = await listenOnce(server, 0)
   }
 
   return {
     close: () => new Promise<void>(done => server.close(() => done())),
-    origin: `http://127.0.0.1:${address.port}`
+    origin: `http://127.0.0.1:${address!.port}`
   }
 }
 
-export { BLANK_PATH, DEFAULT_PORT, rendererRequestPath, startRendererServer }
+/**
+ * The renderer port for this install's userData. The default data dir keeps
+ * DEFAULT_PORT; a second instance (HERMES_DATA_DIR_SUFFIX or a custom data dir)
+ * runs alongside it, so it gets its own stable port derived from the path rather
+ * than losing the collision and landing on a new origin every launch.
+ */
+function rendererPortFor(userData: string, isDefaultUserData: boolean): number {
+  if (isDefaultUserData) {
+    return DEFAULT_PORT
+  }
+
+  let hash = 0x811c9dc5
+
+  for (const char of userData) {
+    hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193)
+  }
+
+  return DEFAULT_PORT + 10 + ((hash >>> 0) % 1000) * 4
+}
+
+export { BLANK_PATH, DEFAULT_PORT, rendererPortFor, rendererRequestPath, startRendererServer }
 export type { RendererServer }

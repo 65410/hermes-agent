@@ -9,7 +9,9 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 const nodeRequire = createRequire(import.meta.url)
-const { BLANK_PATH, rendererRequestPath, startRendererServer } = nodeRequire('./renderer-server.ts')
+
+const { BLANK_PATH, DEFAULT_PORT, rendererPortFor, rendererRequestPath, startRendererServer } =
+  nodeRequire('./renderer-server.ts')
 
 test('serves the packaged renderer from a loopback HTTP origin', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-'))
@@ -54,7 +56,7 @@ test('falls back to the SPA shell for extensionless paths', async t => {
 // Regression: the default port was fixed and any bind failure rejected. main.ts
 // awaits this server before createWindow(), so an occupied 47891 meant startup
 // never reached window creation — a blank launch with no clue why.
-test('falls back to an ephemeral port when the requested port is taken', async t => {
+test('a taken port never blocks startup', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-'))
   fs.writeFileSync(path.join(root, 'index.html'), '<main>Hermes</main>')
 
@@ -80,6 +82,39 @@ test('falls back to an ephemeral port when the requested port is taken', async t
   assert.equal(index.status, 200)
   assert.equal(await index.text(), '<main>Hermes</main>')
   assert.equal(await (await fetch(`http://127.0.0.1:${takenPort}/`)).text(), 'squatter')
+})
+
+test('a taken port falls back to a fixed neighbour, so the origin stays stable', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-'))
+  fs.writeFileSync(path.join(root, 'index.html'), '<main>Hermes</main>')
+  const squatter = http.createServer((_request, response) => response.end('squatter'))
+  await new Promise<void>(done => squatter.listen({ host: '127.0.0.1', port: 0 }, () => done()))
+  const takenPort = (squatter.address() as AddressInfo).port
+
+  const first = await startRendererServer(root, { port: takenPort })
+  const firstOrigin = first.origin
+  await first.close()
+  const second = await startRendererServer(root, { port: takenPort })
+
+  t.onTestFinished(async () => {
+    await second.close()
+    await new Promise<void>(done => squatter.close(() => done()))
+    fs.rmSync(root, { force: true, recursive: true })
+  })
+
+  assert.equal(firstOrigin, `http://127.0.0.1:${takenPort + 1}`)
+  assert.equal(second.origin, firstOrigin, 'a relaunch against the same squatter keeps its origin')
+})
+
+test('each data dir gets its own stable renderer port', () => {
+  const a = rendererPortFor('/Users/x/Library/Application Support/Hermes-work', false)
+  const b = rendererPortFor('/Users/x/Library/Application Support/Hermes-play', false)
+
+  assert.equal(rendererPortFor('/anything', true), DEFAULT_PORT)
+  assert.equal(rendererPortFor('/Users/x/Library/Application Support/Hermes-work', false), a)
+  assert.notEqual(a, b)
+  // Clear of the default instance's port and its fallbacks.
+  assert.ok(a > DEFAULT_PORT + 3 && b > DEFAULT_PORT + 3)
 })
 
 test('serves a script-free blank document for the storage migration', async t => {
