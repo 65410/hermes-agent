@@ -28,8 +28,12 @@ import {
 import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
-import { cloneAttachments, type QueueEditState } from '../composer-utils'
-import { useComposerScope } from '../scope'
+import {
+  cloneAttachments,
+  queuedEditBufferClean,
+  type QueueEditState
+} from '../composer-utils'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 /** Freeze terminal chips for queue persistence. Persists the chip/display
@@ -114,6 +118,11 @@ export function useComposerQueue({
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
   const scope = useComposerScope()
+  // Which mounted composer this hook instance drives (#88621 review R7): a
+  // salvage record is published by the surface whose buffer was torn down, and
+  // only that surface's Undo may consume it — a second pane on the same
+  // session has its own live buffer and must never eat another pane's record.
+  const surfaceId = useComposerSurfaceId()
 
   // Per-session slice (edge): re-renders only when THIS session's queue changes,
   // not on cross-session queue churn (the plain atom's map ref changes on every
@@ -150,11 +159,18 @@ export function useComposerQueue({
       return
     }
 
+    // Read the LIVE editor before the edit takes it over (#88621 review R3):
+    // input flushes the DOM into draftRef on a rAF, so a final burst typed
+    // right before the Edit click would otherwise be overwritten by the
+    // entry's text AND dropped from the pre-edit draft snapshot.
+    const liveDraft = readLiveText()
+
     setQueueEditSnapshot({
       attachments: cloneAttachments(attachments),
-      draft: draftRef.current,
+      draft: liveDraft,
       entryId: entry.id,
       entryText: entry.displayText ?? entry.text,
+      entryAttachments: cloneAttachments(entry.attachments),
       sessionKey: activeQueueSessionKey
     })
     // Edit what the panel SHOWS. A queued `/skill` entry's text is the
@@ -179,16 +195,22 @@ export function useComposerQueue({
       return index >= 0 // at the oldest: swallow; missing entry: let it fall through
     }
 
-    const frozen = draftRef.current.trim()
-      ? freezeQueuedDraftText(draftRef.current, t.composer)
-      : { text: draftRef.current }
+    // Read the LIVE editor before committing the step (#88621 review R3): a
+    // burst typed with the flush frame still pending would otherwise be saved
+    // as the stale draftRef text — the entry keeps its old text and the
+    // replacement is gone.
+    const liveText = readLiveText()
+    const liveAttachments = cloneAttachments(attachments)
+    // Freeze @terminal selections on the live text (main's frozen-transport
+    // contract): a later label collision must not inject unrelated output.
+    const frozen = liveText.trim() ? freezeQueuedDraftText(liveText, t.composer) : { text: liveText }
 
     if (!frozen) {
       return true
     }
 
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-      attachments: cloneAttachments(attachments),
+      attachments: liveAttachments,
       text: frozen.text,
       displayText: frozen.displayText ?? null,
       frozenTransport: frozen.frozenTransport ?? null
@@ -198,8 +220,14 @@ export function useComposerQueue({
 
     if (next) {
       // Re-base the dirty check on the entry now under edit, or a clean buffer
-      // on `next` reads as dirty against the entry we just left (#88621).
-      setQueueEditSnapshot({ ...queueEdit, entryId: next.id, entryText: next.displayText ?? next.text })
+      // on `next` reads as dirty against the entry we just left (#88621). The
+      // entry's initial attachment payload re-bases with it (#88621 review R2).
+      setQueueEditSnapshot({
+        ...queueEdit,
+        entryId: next.id,
+        entryText: next.displayText ?? next.text,
+        entryAttachments: cloneAttachments(next.attachments)
+      })
       loadIntoComposer(next.displayText ?? next.text, next.attachments)
     } else {
       setQueueEditSnapshot(null)
@@ -217,18 +245,23 @@ export function useComposerQueue({
       return false
     }
 
-    if (action === 'save') {
-      const text = draftRef.current
-      const next = cloneAttachments(attachments)
+    // Read the LIVE editor for every exit (#88621 review R3): ordinary input
+    // schedules the DOM→draftRef flush through rAF, so draftRef alone can miss
+    // the last burst — the Save branch would commit the stale pre-edit text
+    // to the entry, and the Cancel branch would misread a dirty buffer as
+    // clean (destroying the typed text with no notice offered).
+    const liveText = readLiveText()
+    const liveAttachments = cloneAttachments(attachments)
 
-      if (!text.trim() && next.length === 0) {
+    if (action === 'save') {
+      if (!liveText.trim() && liveAttachments.length === 0) {
         return false
       }
 
       // Editing a queued entry into a slash-command + attachment combo would
       // produce an undrainable entry (submitText rejects it on every attempt).
       // Refuse the save so the queue can never hold an entry that livelocks.
-      if (isSlashCommandText(text) && next.length) {
+      if (isSlashCommandText(liveText) && liveAttachments.length) {
         notify({
           kind: 'warning',
           title: t.desktop.slashCommandIgnoredTitle,
@@ -238,14 +271,17 @@ export function useComposerQueue({
         return false
       }
 
-      const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+      // Freeze @terminal selections on the live text before saving: the entry
+      // must capture the selection contents at save time, not re-resolve the
+      // label at drain time (main's frozen-transport contract).
+      const frozen = liveText.trim() ? freezeQueuedDraftText(liveText, t.composer) : { text: liveText }
 
       if (!frozen) {
         return false
       }
 
       const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-        attachments: next,
+        attachments: liveAttachments,
         text: frozen.text,
         displayText: frozen.displayText ?? null,
         frozenTransport: frozen.frozenTransport ?? null
@@ -255,16 +291,19 @@ export function useComposerQueue({
     } else {
       // A cancel repaints the pre-edit draft by design — but the dirty edit
       // buffer is the user's latest work and must stay recoverable (#88621):
-      // publish the salvage notice before the repaint discards it. Only a
-      // buffer that actually diverged from the entry it was editing counts.
-      // Read the LIVE editor: ordinary input schedules the DOM→draftRef flush
-      // through rAF, so draftRef alone can miss the last burst and misread a
-      // dirty buffer as clean (the text would then be destroyed by the
-      // repaint below with no notice offered).
-      const liveText = readLiveText()
-
-      if (liveText !== queueEdit.entryText) {
-        announceSalvagedEdit(queueEdit.sessionKey, queueEdit.draft, liveText)
+      // publish the salvage notice before the repaint discards it. The buffer
+      // is dirty when EITHER half of the payload diverged from the entry it
+      // was editing (#88621 review R2) — text-only read a chip added with
+      // unchanged text as "clean" and let the repaint destroy it.
+      if (!queuedEditBufferClean(queueEdit, liveText, liveAttachments)) {
+        // The recovery payload is the whole dirty buffer — text AND the
+        // attachment membership the user composed (#88621 review N1) — so
+        // Undo restores the edited payload instead of the typed words
+        // wearing the pre-edit draft's chips.
+        announceSalvagedEdit(queueEdit.sessionKey, queueEdit.draft, liveText, {
+          attachments: liveAttachments,
+          surfaceKey: surfaceId ?? undefined
+        })
       }
 
       triggerHaptic('cancel')
@@ -634,12 +673,21 @@ export function useComposerQueue({
       // rAF, so at this destructive boundary draftRef alone can still hold
       // the pre-edit text while the DOM already shows the first typed burst
       // — the dirty buffer would be misread as clean and repainted away.
+      // The dirty decision is the whole payload (#88621 review R2): a chip
+      // added with unchanged text is as much unsaved work as typed words.
       const liveText = readLiveText()
+      const liveAttachments = attachments
 
-      if (liveText !== queueEdit.entryText) {
+      if (!queuedEditBufferClean(queueEdit, liveText, liveAttachments)) {
         // Dirty buffer, entry gone: keep the typed text where the user put
         // it — the editor IS the only copy — and offer it via the notice.
-        announceSalvagedEdit(queueEdit.sessionKey, liveText, liveText)
+        // The record carries the payload (text + chips) so Undo can restore
+        // the whole edited buffer (#88621 review N1), and names this surface
+        // so a sibling pane cannot consume it (R7).
+        announceSalvagedEdit(queueEdit.sessionKey, liveText, liveText, {
+          attachments: cloneAttachments(liveAttachments),
+          surfaceKey: surfaceId ?? undefined
+        })
         setQueueEditSnapshot(null)
 
         return
