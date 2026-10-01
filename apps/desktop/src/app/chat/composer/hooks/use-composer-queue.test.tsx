@@ -2,11 +2,10 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  $salvagedEditNotice,
-  type ComposerAttachment,
   $salvagedEditNoticesBySession,
   announceSalvagedEdit,
   clearComposerTerminalSelections,
+  type ComposerAttachment,
   dismissSalvagedEdit,
   getSalvagedEditNotice,
   setComposerTerminalSelection,
@@ -452,6 +451,7 @@ describe('useComposerQueue park integration', () => {
     expect(onSubmit).not.toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
     expect($notifications.get().some(n => n.message.includes('Re-select the lines'))).toBe(true)
+  })
 
   it('keeps a dirty in-progress queued edit when the turn settles in the background (#88621)', async () => {
     // The reporter's scenario: the user opens a queued prompt for in-place
@@ -795,6 +795,7 @@ describe('useComposerQueue live-input reads (#88621 review R3/R2)', () => {
   }) {
     const queueEditRef: { current: QueueEditState | null } = { current: null }
     const draftRef = { current: '' }
+
     const loadIntoComposer =
       overrides.loadIntoComposer ??
       ((text: string) => {
