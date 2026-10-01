@@ -1695,6 +1695,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
+    # Provenance, not a route: stamp the config target this runtime was captured against so resume
+    # can tell an inherited default (config may supersede) from a deliberate per-chat divergence
+    # (must survive config edits). Same pair shape as gateway/session.py's OVERRIDE_PROVENANCE_KEY.
+    _cfg_model, _cfg_provider = _config_model_target()
+    config["config_default"] = {"model": _cfg_model, "provider": _cfg_provider}
     reasoning_config = getattr(agent, "reasoning_config", None)
     live = {
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),
