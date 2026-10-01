@@ -30,7 +30,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  WebContentsView
 } from 'electron'
 import type { Session } from 'electron'
 
@@ -535,6 +536,7 @@ import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-fla
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { startRendererServer } from './renderer-server'
+import { migrateLegacyRendererStorage } from './renderer-storage-migration'
 import { isRendererUrl } from './renderer-url'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import { rosterSourceStatus } from './roster-source-status'
@@ -19371,6 +19373,23 @@ app.whenReady().then(async () => {
   // server already provides the origin.
   if (!DEV_SERVER) {
     packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
+    // A WebContentsView, not a hidden BrowserWindow: destroying the only window
+    // would fire window-all-closed, which quits on Windows/Linux. Keep the view
+    // referenced — once it is collected, its webContents is destroyed mid-load.
+    await migrateLegacyRendererStorage({
+      log: rememberLog,
+      openPage: () => {
+        const view = new WebContentsView()
+
+        return {
+          close: () => view.webContents.isDestroyed() || view.webContents.close(),
+          load: url => view.webContents.loadURL(url),
+          run: script => view.webContents.executeJavaScript(script)
+        }
+      },
+      origin: packagedRendererServer.origin,
+      userData: app.getPath('userData')
+    })
   }
 
   // Post-update relaunch detection (App Installer arm): when the previous
