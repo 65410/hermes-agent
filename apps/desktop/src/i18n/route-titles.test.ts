@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { APP_ROUTES } from '@/app/routes'
+
 import { TRANSLATIONS } from './catalog'
 
 // The sr-only <h1> (RouteHeading) announces t.shell.routeTitles[view] for the
