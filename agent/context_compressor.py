@@ -326,7 +326,9 @@ MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
 _DB_PERSISTED_MARKER = "_db_persisted"
 # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
 # they don't duplicate live copies in recall; never persisted (unknown column).
-_COMPACTION_TAIL_MARKER = "_compaction_tail"
+# Aliased from message_metadata: it is a persistence-only field, so the wire-shadow
+# token estimator must never price it (the commit pops it only after salvage #126102).
+from agent.message_metadata import COMPACTION_TAIL_MARKER as _COMPACTION_TAIL_MARKER  # noqa: E402
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."

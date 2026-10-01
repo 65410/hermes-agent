@@ -73,6 +73,20 @@ def test_refused_growing_compression_with_tail_tags_is_a_clean_refusal():
         assert all(m.get("active", 1) for m in all_rows)
 
 
+def test_compaction_tail_marker_is_never_priced_by_the_estimate():
+    """The tail marker is persistence-only bookkeeping: pricing it would inflate the
+    anti-growth estimate and falsely refuse a tagged-tail candidate as would-grow
+    (the pop moved after salvage in _commit_compaction, so the estimate sees it)."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    rows = [
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary body", "_compaction_tail": True},
+        {"role": "assistant", "content": "tiny tail", "_compaction_tail": True},
+    ]
+    untagged = [{k: v for k, v in m.items() if k != "_compaction_tail"} for m in rows]
+    assert estimate_messages_tokens_rough(rows) == estimate_messages_tokens_rough(untagged)
+
+
 def test_salvaged_carried_tail_tags_survive_salvage_dict_rebuild():
     """After salvage rebuilds dicts, tail tags must still be tracked on the FINAL list so
     tail_count counts the carried rows and archive_and_compact flags their originals
