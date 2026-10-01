@@ -243,7 +243,7 @@ def _load_output_schema(path: Optional[str]) -> tuple[dict | None, str | None]:
         return None, None
     schema_path = Path(path).expanduser()
     try:
-        raw = schema_path.read_text(encoding="utf-8")
+        raw = schema_path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         return None, f"cannot read --output-schema {schema_path}: {exc.strerror or exc}"
     try:
