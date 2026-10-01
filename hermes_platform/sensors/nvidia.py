@@ -11,7 +11,7 @@ from __future__ import annotations
 import ctypes as C
 import sys
 
-_NVML_CLOCK_SM = 0
+_NVML_CLOCK_SM = 1
 _NVML_TEMPERATURE_GPU = 0
 
 
@@ -50,7 +50,7 @@ class NvmlSampler:
         self._devices: list[tuple[int, str]] = []
         count = C.c_uint(0)
         if lib.nvmlDeviceGetCount_v2(C.byref(count)) != 0:
-            return
+            raise OSError("NVML device enumeration failed")
         handle = C.c_void_p()
         name_buf = C.create_string_buffer(96)
         for i in range(count.value):
@@ -59,17 +59,26 @@ class NvmlSampler:
             name = name_buf.value.decode(errors="replace") if lib.nvmlDeviceGetName(handle, name_buf, 96) == 0 else ""
             self._devices.append((handle.value, name))
 
+    def close(self) -> None:
+        """Release this sampler's NVML initialization exactly once."""
+        lib, self._lib = self._lib, None
+        self._devices.clear()
+        if lib is not None:
+            lib.nvmlShutdown()
+
     def _mw_to_w(self, dev_p, fn) -> float | None:
         val = C.c_uint(0)
         return val.value / 1000.0 if fn(dev_p, C.byref(val)) == 0 else None
 
     def sample(self) -> list[GpuReading]:
         lib = self._lib
+        if lib is None:
+            return []
         out: list[GpuReading] = []
         for dev, name in self._devices:
             dev_p = C.c_void_p(dev)
             active = None
-            util = (C.c_uint * 4)()  # nvmlUtilization_t: gpu, memory, encoder, decoder
+            util = (C.c_uint * 2)()  # nvmlUtilization_t: gpu, memory
             if lib.nvmlDeviceGetUtilizationRates(dev_p, C.byref(util)) == 0 and util[0] <= 100:
                 active = util[0] / 100.0
             freq = None
@@ -84,10 +93,11 @@ class NvmlSampler:
                 temp = float(t.value)
             cores = None
             c = C.c_uint(0)
-            if lib.nvmlDeviceGetNumGpuCores(dev_p, C.byref(c)) == 0 and c.value:
+            core_query = getattr(lib, "nvmlDeviceGetNumGpuCores", None)
+            if core_query is not None and core_query(dev_p, C.byref(c)) == 0 and c.value:
                 cores = c.value
             mem_total = mem_used = None
-            mem = (C.c_ulonglong * 3)()  # nvmlMemory_t lead: total, reserved, used
+            mem = (C.c_ulonglong * 3)()  # nvmlMemory_t: total, free, used
             if lib.nvmlDeviceGetMemoryInfo(dev_p, C.byref(mem)) == 0:
                 mem_total, mem_used = mem[0], mem[2]
             out.append(GpuReading(name, active, freq, cores, power_w, limit_w, temp, mem_total, mem_used))
@@ -99,12 +109,13 @@ def open_sampler() -> NvmlSampler | None:
     path = nvml_library_path()
     if path is None:
         return None
+    lib = None
+    initialized = False
     try:
         lib = C.CDLL(path)
-        lib.nvmlInit_v2.restype = C.c_uint
-        if lib.nvmlInit_v2() != 0:
-            return None
         for fname, argtypes in (
+            ("nvmlInit_v2", []),
+            ("nvmlShutdown", []),
             ("nvmlDeviceGetCount_v2", [C.POINTER(C.c_uint)]),
             ("nvmlDeviceGetHandleByIndex_v2", [C.c_uint, C.POINTER(C.c_void_p)]),
             ("nvmlDeviceGetName", [C.c_void_p, C.c_char_p, C.c_uint]),
@@ -118,9 +129,19 @@ def open_sampler() -> NvmlSampler | None:
         ):
             fn = getattr(lib, fname, None)
             if fn is None:
+                if fname == "nvmlDeviceGetNumGpuCores":  # added in newer NVML drivers
+                    continue
                 return None
             fn.restype = C.c_uint
             fn.argtypes = argtypes
-        return NvmlSampler(lib)
+        if lib.nvmlInit_v2() != 0:
+            return None
+        initialized = True
+        sampler = NvmlSampler(lib)
+        initialized = False  # ownership transfers to sampler.close()
+        return sampler
     except (OSError, AttributeError):
         return None
+    finally:
+        if initialized and lib is not None:
+            lib.nvmlShutdown()

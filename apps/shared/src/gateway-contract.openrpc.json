@@ -18881,9 +18881,16 @@
             "type": "string"
           },
           "active": {
-            "description": "0..1 share of the window outside idle states.",
-            "title": "Active",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "0..1 utilization share; null when the driver does not report it.",
+            "title": "Active"
           },
           "freq_mhz": {
             "anyOf": [

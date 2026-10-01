@@ -3580,7 +3580,7 @@ export interface MetricsDomain {
 export interface MetricsGpu {
   name: string
   kind: string
-  active: number
+  active: number | null
   freq_mhz?: number | null
   cores?: number | null
   power_w?: number | null

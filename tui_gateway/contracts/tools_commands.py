@@ -82,7 +82,11 @@ class MetricsCpu(Result):
     cores: list[MetricsDomain] = Field(default_factory=list)
 
 
-class MetricsGpu(MetricsDomain):
+class MetricsGpu(Result):
+    name: str
+    kind: str
+    active: float | None = Field(description="0..1 utilization share; null when the driver does not report it.")
+    freq_mhz: float | None = None
     cores: int | None = None
     power_w: float | None = None
     temp_c: float | None = Field(default=None, description="Device sensor °C (NVML); null when the driver does not report it.")
