@@ -1,12 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $previewTabs, $visiblePreviewTabs, decodePreviewTabs, newBrowserTab } from './preview'
+import {
+  $previewTabs,
+  $visiblePreviewTabs,
+  decodePreviewTabs,
+  newBrowserTab,
+  openPreview,
+  type PreviewTarget
+} from './preview'
 import { $selectedStoredSessionId } from './session'
 
 // Regression coverage for the four flows that reverted the session-scoped
 // rail (https://github.com/NousResearch/hermes-agent/pull/130852). Each test
 // works at the store + persistence seam: the row is written by the real store,
 // read back through the real encoder/decoder, and only then asserted on.
+
+function urlTarget(source: string): PreviewTarget {
+  return { kind: 'url', label: source, source, url: source }
+}
 
 /** The single profile bucket the store persists, as written. */
 function persistedBucket(): unknown[] {
@@ -56,5 +67,35 @@ describe('preview tabs regressions (#73890 re-land)', () => {
     $selectedStoredSessionId.set('sess-1')
 
     expect($visiblePreviewTabs.get()).toHaveLength(1)
+  })
+
+  // Regression 2 (reported by DavidMetcalfe with this repro on the original
+  // PR): parseTabList's `lastUrl` skip dropped every Browser row but the last
+  // on restore — 3 live, 3 persisted, 1 restored — and pop-out, which looks a
+  // tab up by its persisted id, lost its backing row whenever the popped
+  // Browser was not the newest URL row.
+  it('restores every Browser tab with its minted id, not just the newest', () => {
+    $selectedStoredSessionId.set('sess-1')
+
+    // The strip's "+" mints the surface; openPreview navigates the ACTIVE
+    // Browser, so each round leaves another Browser holding its own page.
+    newBrowserTab()
+    openPreview(urlTarget('https://a.example'))
+    newBrowserTab()
+    openPreview(urlTarget('https://b.example'))
+    newBrowserTab()
+    openPreview(urlTarget('https://c.example'))
+
+    const live = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+    expect(live).toHaveLength(3)
+
+    // Rows written by the store, then read back through the same decoder a
+    // relaunch runs (loadTabsByProfile → parseTabList).
+    const restored = decodePreviewTabs(JSON.stringify(persistedBucket()))
+
+    expect(restored).toHaveLength(3)
+    // Minted ids survive verbatim — the pop-out hand-off depends on them.
+    expect(restored.map(tab => tab.id)).toEqual(live.map(tab => tab.id))
+    expect(restored.map(tab => tab.target.url)).toEqual(['https://a.example', 'https://b.example', 'https://c.example'])
   })
 })

@@ -166,16 +166,14 @@ function parseTabList(parsed: unknown): PreviewTab[] {
   // old and new ids. Browser (URL) rows keep their MINTED id verbatim: ids are
   // never rekeyed (#119850), because the pop-out window hand-off looks tabs up
   // by the persisted id, and reusing a navigated Browser depends on the id
-  // surviving restore. Keep only the LAST row per id — the most recently
-  // opened wins.
-  const lastUrl = owned.findLast(tab => tab.target.kind === 'url')
+  // surviving restore. Every Browser row also SURVIVES the dedupe — collapsing
+  // them onto one (the last URL row) is not an option the multi-tab Browser
+  // ever offered: the rail can hold several Browsers, and a popped-out one
+  // that is not the newest would lose its backing row on the next restore.
+  // Keep only the LAST row per id — the most recently opened wins.
   const deduped = new Map<string, PreviewTab>()
 
   for (const tab of owned) {
-    if (tab.target.kind === 'url' && tab !== lastUrl) {
-      continue
-    }
-
     const id = tab.target.kind === 'file' ? previewTabId(tab.target, tab.sessionId) : tab.id
 
     deduped.set(id, tab.target.kind === 'file' ? { ...tab, id } : tab)
