@@ -3,13 +3,14 @@
 ``powermetrics`` needs root; the same counters are readable unprivileged through the private
 ``libIOReport`` (CPU/GPU performance-state residency and the Energy Model) plus the HID
 temperature services and the ``pmgr`` voltage-state tables in the IORegistry. Every sample is a
-delta against the previous one, so the first :meth:`SocSampler.sample` only primes the counters.
+delta against the previous one; construction primes the counters.
 """
 
 from __future__ import annotations
 
 import ctypes as C
 import ctypes.util
+import re
 import struct
 import sys
 import time
@@ -103,7 +104,6 @@ class _Frameworks:
                 "CFNumberCreate": (vp, [vp, C.c_int, vp]),
                 "CFNumberGetValue": (C.c_bool, [vp, C.c_int, vp]),
                 "CFDictionaryCreate": (vp, [vp, C.POINTER(vp), C.POINTER(vp), C.c_long, vp, vp]),
-                "CFDictionaryCreateMutableCopy": (vp, [vp, C.c_long, vp]),
                 "CFDictionaryGetValue": (vp, [vp, vp]),
                 "CFArrayGetCount": (C.c_long, [vp]),
                 "CFArrayGetValueAtIndex": (vp, [vp, C.c_long]),
@@ -148,11 +148,19 @@ class _Frameworks:
                 fn.restype, fn.argtypes = restype, argtypes
         self._strings: dict[str, int] = {}
 
+    def close(self) -> None:
+        for ref in self._strings.values():
+            self.cf.CFRelease(ref)
+        self._strings.clear()
+
     def cfstr(self, text: str) -> int:
-        """Interned CFString; lives for the process like the sampler that uses it."""
+        """Interned CFString, owned until the sampler closes."""
         ref = self._strings.get(text)
         if ref is None:
-            ref = self._strings[text] = self.cf.CFStringCreateWithCString(None, text.encode(), _UTF8)
+            ref = self.cf.CFStringCreateWithCString(None, text.encode(), _UTF8)
+            if not ref:
+                raise OSError("CFString allocation failed")
+            self._strings[text] = ref
         return ref
 
     def pystr(self, ref: int | None) -> str:
@@ -190,30 +198,59 @@ class SocSampler:
 
     def __init__(self) -> None:
         self._fw = fw = _Frameworks()
-        self._dvfs = self._read_dvfs_tables()
-        self.gpu_cores = self._read_gpu_cores()
-        channels = None
-        for group, subgroup in _IOREPORT_GROUPS:
-            found = fw.ior.IOReportCopyChannelsInGroup(
-                fw.cfstr(group), fw.cfstr(subgroup) if subgroup else None, 0, 0, 0)
-            if not found:
-                continue
-            if channels is None:
-                channels = found
-            else:
-                fw.ior.IOReportMergeChannels(channels, found, None)
-                fw.cf.CFRelease(found)
-        if channels is None:
-            raise OSError("IOReport exposes no SoC channels")
-        self._channels = fw.cf.CFDictionaryCreateMutableCopy(None, 0, channels)
-        fw.cf.CFRelease(channels)
-        sub_dict = C.c_void_p()
-        self._subscription = fw.ior.IOReportCreateSubscription(None, self._channels, C.byref(sub_dict), 0, None)
-        if not self._subscription:
-            raise OSError("IOReport subscription refused")
-        self._thermal = self._open_thermal_services()
-        self._last = fw.ior.IOReportCreateSamples(self._subscription, self._channels, None)
-        self._last_t = time.monotonic()
+        self._channels = self._subscription = self._hid = self._last = None
+        self._thermal: list[tuple[str, int]] = []
+        try:
+            self._dvfs = self._read_dvfs_tables()
+            self.gpu_cores = self._read_gpu_cores()
+            for group, subgroup in _IOREPORT_GROUPS:
+                found = fw.ior.IOReportCopyChannelsInGroup(
+                    fw.cfstr(group), fw.cfstr(subgroup) if subgroup else None, 0, 0, 0)
+                if not found:
+                    continue
+                if self._channels is None:
+                    self._channels = found
+                else:
+                    try:
+                        fw.ior.IOReportMergeChannels(self._channels, found, None)
+                    finally:
+                        fw.cf.CFRelease(found)
+            if not self._channels:
+                raise OSError("IOReport exposes no SoC channels")
+            sub_dict = C.c_void_p()
+            try:
+                self._subscription = fw.ior.IOReportCreateSubscription(
+                    None, self._channels, C.byref(sub_dict), 0, None)
+            finally:
+                # The out parameter is an owned dictionary of the channels actually
+                # subscribed, not the desired channel list passed into the call.
+                fw.cf.CFRelease(self._channels)
+                self._channels = sub_dict.value
+            if not self._subscription or not self._channels:
+                raise OSError("IOReport subscription refused")
+            self._open_thermal_services()
+            self._last = fw.ior.IOReportCreateSamples(self._subscription, self._channels, None)
+            if not self._last:
+                raise OSError("IOReport initial sample unavailable")
+            self._last_t = time.monotonic()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Release native ownership, including partially initialized samplers; safe to repeat."""
+        fw = self._fw
+        for _, svc in self._thermal:
+            fw.cf.CFRelease(svc)
+        self._thermal.clear()
+        # IOReportSubscription is a CF runtime type (CFGetTypeID's description is
+        # "IOReportSubscription"); it uses CFRelease, not IOObjectRelease/free.
+        for attr in ("_last", "_hid", "_subscription", "_channels"):
+            ref = getattr(self, attr)
+            if ref:
+                setattr(self, attr, None)
+                fw.cf.CFRelease(ref)
+        fw.close()
 
     def _read_dvfs_tables(self) -> dict[str, list[float]]:
         fw = self._fw
@@ -224,8 +261,10 @@ class SocSampler:
             for kind, key in _DVFS_KEYS.items():
                 data = fw.registry_property(entry, key)
                 if data:
-                    raw = C.string_at(fw.cf.CFDataGetBytePtr(data), fw.cf.CFDataGetLength(data))
-                    fw.cf.CFRelease(data)
+                    try:
+                        raw = C.string_at(fw.cf.CFDataGetBytePtr(data), fw.cf.CFDataGetLength(data))
+                    finally:
+                        fw.cf.CFRelease(data)
                     tables[kind] = dvfs_table_mhz(raw)
         return tables
 
@@ -235,42 +274,58 @@ class SocSampler:
             num = fw.registry_property(entry, "gpu-core-count")
             if num:
                 value = C.c_int64()
-                ok = fw.cf.CFNumberGetValue(num, _CF_NUMBER_SINT64, C.byref(value))
-                fw.cf.CFRelease(num)
+                try:
+                    ok = fw.cf.CFNumberGetValue(num, _CF_NUMBER_SINT64, C.byref(value))
+                finally:
+                    fw.cf.CFRelease(num)
                 if ok:
                     return int(value.value)
         return None
 
-    def _open_thermal_services(self) -> list[tuple[str, int]]:
+    def _open_thermal_services(self) -> None:
         """Retain every HID temperature service once with its product name (the set is fixed per boot)."""
         fw = self._fw
         cf_type_key = C.c_void_p.in_dll(fw.cf, "kCFTypeDictionaryKeyCallBacks")
         cf_type_val = C.c_void_p.in_dll(fw.cf, "kCFTypeDictionaryValueCallBacks")
         keys = (C.c_void_p * 2)(fw.cfstr("PrimaryUsagePage"), fw.cfstr("PrimaryUsage"))
-        vals = (C.c_void_p * 2)(fw.cfint32(0xFF00), fw.cfint32(5))  # AppleVendor / TemperatureSensor
-        match = fw.cf.CFDictionaryCreate(None, keys, vals, 2, C.addressof(cf_type_key), C.addressof(cf_type_val))
-        for v in vals:
-            fw.cf.CFRelease(v)
-        self._hid = fw.iokit.IOHIDEventSystemClientCreate(None)
-        if not self._hid:
+        vals = []
+        try:
+            for value in (0xFF00, 5):  # AppleVendor / TemperatureSensor
+                ref = fw.cfint32(value)
+                if not ref:
+                    raise OSError("HID matching number allocation failed")
+                vals.append(ref)
+            match = fw.cf.CFDictionaryCreate(
+                None, keys, (C.c_void_p * 2)(*vals), 2, C.addressof(cf_type_key), C.addressof(cf_type_val))
+        finally:
+            for ref in vals:
+                fw.cf.CFRelease(ref)
+        if not match:
+            raise OSError("HID matching dictionary allocation failed")
+        try:
+            self._hid = fw.iokit.IOHIDEventSystemClientCreate(None)
+            if not self._hid:
+                return
+            fw.iokit.IOHIDEventSystemClientSetMatching(self._hid, match)
+        finally:
             fw.cf.CFRelease(match)
-            return []
-        fw.iokit.IOHIDEventSystemClientSetMatching(self._hid, match)
-        fw.cf.CFRelease(match)
         services = fw.iokit.IOHIDEventSystemClientCopyServices(self._hid)
         if not services:
-            return []
-        found: list[tuple[str, int]] = []
-        for i in range(fw.cf.CFArrayGetCount(services)):
-            svc = fw.cf.CFArrayGetValueAtIndex(services, i)
-            prop = fw.iokit.IOHIDServiceClientCopyProperty(svc, fw.cfstr("Product"))
-            name = fw.pystr(prop)
-            if prop:
-                fw.cf.CFRelease(prop)
-            if name:
-                found.append((name, fw.cf.CFRetain(svc)))
-        fw.cf.CFRelease(services)
-        return found
+            return
+        try:
+            for i in range(fw.cf.CFArrayGetCount(services)):
+                svc = fw.cf.CFArrayGetValueAtIndex(services, i)
+                prop = fw.iokit.IOHIDServiceClientCopyProperty(svc, fw.cfstr("Product"))
+                try:
+                    name = fw.pystr(prop)
+                finally:
+                    if prop:
+                        fw.cf.CFRelease(prop)
+                if name:
+                    # Record ownership immediately so partial setup is also closable.
+                    self._thermal.append((name, fw.cf.CFRetain(svc)))
+        finally:
+            fw.cf.CFRelease(services)
 
     def _read_temps(self) -> dict[str, float]:
         """Mean °C per sensor name (the PMU exposes most sensors once per die/instance)."""
@@ -280,8 +335,10 @@ class SocSampler:
             event = fw.iokit.IOHIDServiceClientCopyEvent(svc, _HID_TEMPERATURE_EVENT, 0, 0)
             if not event:
                 continue
-            celsius = fw.iokit.IOHIDEventGetFloatValue(event, _HID_TEMPERATURE_FIELD)
-            fw.cf.CFRelease(event)
+            try:
+                celsius = fw.iokit.IOHIDEventGetFloatValue(event, _HID_TEMPERATURE_FIELD)
+            finally:
+                fw.cf.CFRelease(event)
             if 0 < celsius < 150:  # unpowered sensors report 0 or sentinel values
                 readings.setdefault(name, []).append(celsius)
         return {name: sum(v) / len(v) for name, v in sorted(readings.items())}
@@ -292,13 +349,21 @@ class SocSampler:
                 for k in range(ior.IOReportStateGetCount(channel))]
 
     def sample(self) -> SocReading:
+        if not self._subscription:
+            raise OSError("SoC sampler is closed")
         fw = self._fw
         now_sample = fw.ior.IOReportCreateSamples(self._subscription, self._channels, None)
         now = time.monotonic()
+        if not now_sample:
+            # Keep the previous sample AND timestamp: the next read spans this gap.
+            raise OSError("IOReport sample unavailable")
         interval = now - self._last_t
         delta = fw.ior.IOReportCreateSamplesDelta(self._last, now_sample, None)
         fw.cf.CFRelease(self._last)
         self._last, self._last_t = now_sample, now
+        if not delta:
+            # The new sample is valid; re-prime rather than reusing an incompatible pair.
+            raise OSError("IOReport sample delta unavailable")
         clusters: list[Domain] = []
         cores: list[Domain] = []
         gpu: Domain | None = None
@@ -309,8 +374,11 @@ class SocSampler:
                 ch = fw.cf.CFArrayGetValueAtIndex(channels, i)
                 group = fw.pystr(fw.ior.IOReportChannelGetGroup(ch))
                 name = fw.pystr(fw.ior.IOReportChannelGetChannelName(ch))
+                # Ultra chips repeat channel names per die. Classify the suffix,
+                # but retain the full name as the domain identity.
+                local_name = re.sub(r"^DIE_[0-9]+_", "", name)
                 if group == "Energy Model":
-                    bucket = _power_bucket(name)
+                    bucket = _power_bucket(local_name)
                     if bucket:
                         unit = fw.pystr(fw.ior.IOReportChannelGetUnitLabel(ch))
                         watts = energy_watts(fw.ior.IOReportSimpleGetIntegerValue(ch, 0), unit, interval)
@@ -321,8 +389,8 @@ class SocSampler:
                 if group == "GPU Stats" and name == "GPUPH":
                     active, freq = residency_summary(self._states(ch), self._dvfs.get("GPU", []))
                     gpu = Domain(name, "GPU", active, freq)
-                elif group == "CPU Stats" and name[:1] in "EP" and "CPU" in name:
-                    kind = name[0]
+                elif group == "CPU Stats" and local_name.startswith(("ECPU", "PCPU")):
+                    kind = local_name[0]
                     active, freq = residency_summary(self._states(ch), self._dvfs.get(kind, []))
                     target = clusters if subgroup == "CPU Complex Performance States" else cores
                     target.append(Domain(name, kind, active, freq))
