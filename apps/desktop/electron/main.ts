@@ -659,7 +659,6 @@ import {
   shouldSurfaceErrorForRendererStackCookieCrashLoop,
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
-import { installWindowsSystemCaTrust } from './windows-system-ca'
 import { installWebSocketBridge } from './ws-bridge'
 
 import { readWindowsUserEnvVar } from './windows-user-env'
