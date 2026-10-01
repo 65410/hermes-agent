@@ -16,7 +16,8 @@ import {
   renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
-import { $activeSessionId, $currentCwd } from '@/store/session'
+import { $activeSessionId, $currentCwd, $selectedStoredSessionId } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 
 type EventHandler = (event: GatewayEvent) => void
@@ -37,6 +38,23 @@ function sessionIsOnScreen(sessionId: string): boolean {
     sessionId === $activeSessionId.get() ||
     $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
   )
+}
+
+/** The STORED id of the session a gateway event names — so the tab lands in
+ *  the drawer of the chat that ASKED for the preview, not whichever chat
+ *  happens to hold focus. The active runtime names the primary's selection; a
+ *  tiled runtime names its tile. Unresolvable (or absent) session ids read as
+ *  null and fall back to focus. */
+function storedIdForEventRuntime(runtimeId: unknown): null | string {
+  if (typeof runtimeId !== 'string' || !runtimeId) {
+    return null
+  }
+
+  if (runtimeId === $activeSessionId.get()) {
+    return $selectedStoredSessionId.get()
+  }
+
+  return $sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.storedSessionId ?? null
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -89,6 +107,11 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         const target = typeof url === 'string' ? url.trim() : ''
 
         if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
+          // The tab belongs to the session that asked — the event's runtime
+          // resolved to its stored id. A tile's open lands in the TILE's
+          // drawer even while main (or another tile) holds focus.
+          const ownerStoredSessionId = storedIdForEventRuntime(event.session_id)
+
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
             async resolved => {
               if (!resolved) {
@@ -102,7 +125,10 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
               const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
 
-              openPreview(renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached))
+              openPreview(
+                renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
+                ownerStoredSessionId
+              )
             }
           )
         }
@@ -120,6 +146,10 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         if (event.session_id && !sessionIsOnScreen(event.session_id)) {
           return
         }
+
+        // The close acts on the drawer of the session that ASKED — a tile's
+        // tidy must reach the tile's own tab, not the focused chat's rail.
+        const ownerSessionId = storedIdForEventRuntime(event.session_id) ?? $focusedStoredSessionId.get()
 
         if (!target) {
           closeRightRail()
@@ -139,8 +169,8 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
               }
             }
 
-            if (!closeBrowserPreviewMatchingLiveUrl(...candidates)) {
-              closeDockedPreviewMatching(...candidates)
+            if (!closeBrowserPreviewMatchingLiveUrl(candidates, ownerSessionId)) {
+              closeDockedPreviewMatching(candidates, ownerSessionId)
             }
           }
         )

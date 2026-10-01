@@ -288,7 +288,7 @@ describe('preview store', () => {
       url: 'https://example.com/dashboard'
     })
 
-    expect(closeBrowserPreviewMatchingLiveUrl('https://example.com/dashboard')).toBe(true)
+    expect(closeBrowserPreviewMatchingLiveUrl(['https://example.com/dashboard'])).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
     expect($browserPages.get()[tabId]).toBeUndefined()
     expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
@@ -304,7 +304,7 @@ describe('preview store', () => {
     const second = $previewTabs.get()[1].id
     noteBrowserPage(second, { title: 'Example', url: 'https://example.com/' })
 
-    expect(closeBrowserPreviewMatchingLiveUrl('https://example.com')).toBe(true)
+    expect(closeBrowserPreviewMatchingLiveUrl(['https://example.com'])).toBe(true)
     expect($previewTabs.get().map(tab => tab.id)).toEqual([first])
     expect($browserPages.get()[first]?.url).toBe('https://elsewhere.example/')
   })
@@ -424,7 +424,12 @@ describe('preview session scoping', () => {
     const aTab = $previewTabs.get().find(tab => tab.target.path === '/work/a.html')
     setPreviewTabPinned(aTab!.id, true)
 
-    expect($visiblePreviewTabs.get().map(tab => tab.target.path).sort()).toEqual(['/work/a.html', '/work/b.html'])
+    expect(
+      $visiblePreviewTabs
+        .get()
+        .map(tab => tab.target.path)
+        .sort()
+    ).toEqual(['/work/a.html', '/work/b.html'])
 
     // Unpinning hides it from the other session again.
     setPreviewTabPinned(aTab!.id, false)

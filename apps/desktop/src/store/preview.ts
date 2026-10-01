@@ -379,8 +379,19 @@ if (typeof window !== 'undefined') {
  *  and pinned tabs are the explicit cross-session workspace. While no session
  *  exists (a fresh draft), ownerless tabs stay visible. */
 export const $visiblePreviewTabs = computed([$previewTabs, $focusedStoredSessionId], (tabs, sessionId) =>
-  tabs.filter(tab => tab.pinned || tab.sessionId === sessionId || (sessionId == null && tab.sessionId == null))
+  previewTabsVisibleToSession(tabs, sessionId)
 )
+
+/** The drawer ONE session sees: its own tabs plus every pinned row — the same
+ *  predicate `$visiblePreviewTabs` applies to the FOCUSED session, lifted out
+ *  so callers that know the ASKING session (an agent `preview.close` from a
+ *  tile) can act on that session's drawer instead of the focused one. */
+export function previewTabsVisibleToSession(
+  tabs: readonly PreviewTab[],
+  sessionId: null | string | undefined
+): PreviewTab[] {
+  return tabs.filter(tab => tab.pinned || tab.sessionId === sessionId || (sessionId == null && tab.sessionId == null))
+}
 
 // A fresh draft has no session yet, so tabs opened there are ownerless — adopt
 // them into the session the moment one exists (rekeying file ids onto the
@@ -741,10 +752,15 @@ export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMod
  *  (legacy) id, so a session-scoped open would otherwise stack a second tab
  *  for the same file: reuse the pinned row instead — refreshed, still
  *  pinned, fronted. Never steal another session's owned tab: that
- *  coexistence is the point. */
-export function openPreview(target: PreviewTarget) {
+ *  coexistence is the point.
+ *
+ *  `sessionIdOverride` is for callers that KNOW the asking session — an
+ *  agent `preview.open` from a background tile must land in THAT tile's
+ *  drawer, not whichever chat holds focus. Without it the tab is stamped
+ *  with the focused session. */
+export function openPreview(target: PreviewTarget, sessionIdOverride?: null | string) {
   const current = $previewTabs.get()
-  const sessionId = $focusedStoredSessionId.get() ?? undefined
+  const sessionId = sessionIdOverride ?? $focusedStoredSessionId.get() ?? undefined
   const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target, sessionId)
   const index = current.findIndex(tab => tab.id === id)
 
@@ -939,10 +955,11 @@ export function closePreviewForSource(source: string): boolean {
   return true
 }
 
-/** Close the first docked Browser tab whose current page URL matches.
- *  Browsers keep navigation state outside their persisted target so matching
- *  only target.url misses redirects and in-page navigation. */
-export function closeBrowserPreviewMatchingLiveUrl(...candidates: string[]): boolean {
+/** Close the first docked Browser tab (matched by the page it is SHOWING) in
+ *  the drawer the asking session sees. Browsers keep navigation state outside
+ *  their persisted target, so matching only target.url misses redirects and
+ *  in-page navigation. `ownerSessionId` defaults to the focused session. */
+export function closeBrowserPreviewMatchingLiveUrl(candidates: string[], ownerSessionId?: null | string): boolean {
   const queries = new Set(
     candidates
       .map(value => {
@@ -963,7 +980,7 @@ export function closeBrowserPreviewMatchingLiveUrl(...candidates: string[]): boo
 
   const pages = $browserPages.get()
   const popped = $poppedBrowserTabIds.get()
-  const tabs = $previewTabs.get()
+  const tabs = previewTabsVisibleToSession($previewTabs.get(), ownerSessionId ?? $focusedStoredSessionId.get())
   const activeId = $rightRailActiveTabId.get()
   const ordered = [...tabs.filter(tab => tab.id === activeId), ...tabs.filter(tab => tab.id !== activeId)]
 
@@ -1023,13 +1040,15 @@ export function closePreviewMatching(...candidates: string[]): boolean {
   return closePreviewMatchingTabs($visiblePreviewTabs.get(), candidates)
 }
 
-/** Agent-driven close is scoped to the docked rail; an independent Browser
- *  window owns popped tabs and must not lose its backing state here. */
-export function closeDockedPreviewMatching(...candidates: string[]): boolean {
+/** Agent-driven close is scoped to the docked rail of the asking session (the
+ *  focused one by default); an independent Browser window owns popped tabs and
+ *  must not lose its backing state here. */
+export function closeDockedPreviewMatching(candidates: string[], ownerSessionId?: null | string): boolean {
+  const owner = ownerSessionId ?? $focusedStoredSessionId.get()
   const popped = $poppedBrowserTabIds.get()
 
   return closePreviewMatchingTabs(
-    $visiblePreviewTabs.get().filter(tab => !popped.has(tab.id)),
+    previewTabsVisibleToSession($previewTabs.get(), owner).filter(tab => !popped.has(tab.id)),
     candidates
   )
 }

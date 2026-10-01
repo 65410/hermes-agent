@@ -8,6 +8,7 @@ import {
   $browserPages,
   $previewTabs,
   $previewTarget,
+  $visiblePreviewTabs,
   closeRightRail,
   markBrowserTabPopped,
   noteBrowserPage,
@@ -141,6 +142,9 @@ describe('preview routing', () => {
     // The turn that calls open_preview is often a TILE's session while focus
     // sits on main (the user asked, then clicked elsewhere). On-screen is the
     // bar — gating on focus made an explicit "open reddit" silently vanish.
+    // Under the session-scoped rail the tab lives in the TILE's drawer: it
+    // shows in the rail when that conversation is the focused one, instead of
+    // landing in whatever chat held focus when the agent answered.
     it('honors an open from an open tile session even when main holds focus', async () => {
       const { $sessionTiles } = await import('@/store/session-states')
       const tiles = $sessionTiles.get()
@@ -151,9 +155,45 @@ describe('preview routing', () => {
       try {
         await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
 
-        await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/from-tile.html'))
+        await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+        expect($previewTabs.get()[0]).toMatchObject({ sessionId: 'stored-tile' })
+
+        // Visible the moment the tile's conversation is the focused one.
+        await act(async () => {
+          $selectedStoredSessionId.set('stored-tile')
+        })
+
+        expect($previewTarget.get()?.path).toBe('/tmp/from-tile.html')
       } finally {
         $sessionTiles.set(tiles)
+        $selectedStoredSessionId.set(null)
+      }
+    })
+
+    // Regression 3 (one of the four that reverted the scoped rail): the tab
+    // an agent opened from a background TILE landed in the FOCUSED session's
+    // drawer, because openPreview stamped whichever chat held focus. It must
+    // land in the tile's own session.
+    it('lands a tile preview.open in the tile own session, not the focused one', async () => {
+      const { $sessionTiles } = await import('@/store/session-states')
+      const tiles = $sessionTiles.get()
+
+      $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+      $selectedStoredSessionId.set('stored-main')
+      render(<Harness />)
+
+      try {
+        await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
+
+        await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
+        expect($previewTabs.get()[0]).toMatchObject({ sessionId: 'stored-tile' })
+
+        // The focused chat's drawer stays empty: the tile's tab is scoped to
+        // the tile, exactly like a tab the tile's user opened by hand.
+        expect($visiblePreviewTabs.get()).toHaveLength(0)
+      } finally {
+        $sessionTiles.set(tiles)
+        $selectedStoredSessionId.set(null)
       }
     })
 
@@ -306,6 +346,8 @@ describe('preview routing', () => {
         await emitPreviewOpen('/tmp/from-tile.html', 'tile-runtime')
         await waitFor(() => expect($previewTabs.get()).toHaveLength(1))
 
+        // The close reaches the TILE's own tab — the drawer of the session
+        // that asked — while main holds focus.
         await emitPreviewClose('/tmp/from-tile.html', 'tile-runtime')
 
         await waitFor(() => expect($previewTabs.get()).toHaveLength(0))
