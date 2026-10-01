@@ -21,7 +21,7 @@ import {
 } from './timeline-data'
 import { createTimelinePositionReader } from './timeline-position'
 import { TimelineRail } from './timeline-rail'
-import { scrollTimelineTarget, timelineTarget } from './timeline-scroll'
+import { scrollTimelineTarget } from './timeline-scroll'
 import { useTranscriptWindow } from './transcript-window'
 import { useTimelineHistory } from './use-timeline-history'
 
