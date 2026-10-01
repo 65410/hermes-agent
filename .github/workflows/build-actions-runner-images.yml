@@ -1,0 +1,38 @@
+name: Build runner images
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+  push:
+    branches:
+      - build-custom-runner-images
+
+jobs: 
+  build-custom-image:
+    strategy:
+      matrix:
+        base-image: [windows-latest-32-core, windows-32-arm-core]
+    name: build custom ${{ matrix.base-image }} image
+    runs-on: ${{ matrix.base-image }}
+    snapshot:
+      image-name: custom-${{ matrix.base-image }}
+      version: 1.*
+
+    steps:
+      - name: install git
+        run: choco install git --version=2.53
+
+      - name: install python
+        run: choco install python --version=3.14
+
+      - name: install nodejs
+        run: choco install nodejs --version=26
+
+      - name: install ripgrep
+        run: choco install ripgrep --version=15.2.0
+
+      - name: install uv
+        run: choco install uv --version=0.12.3
+
+      - name: install npm
+        run: choco install npm --version=12.0.2
