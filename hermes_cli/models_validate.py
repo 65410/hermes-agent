@@ -381,7 +381,9 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
     # Many OpenAI-compatible and Anthropic-compatible proxies (DashScope coding plan, Cline,
     # MiniMax) never implement GET /models; /chat/completions works fine. Rejecting the switch
     # here bricked `/model` for them (#12220), so both chat modes persist the name unverified.
-    accepted = req.api_mode in ("chat_completions", "anthropic_messages")
+    # codex_responses（ChatGPT/Codex 订阅后端）同样不实现 GET /models；此前不在该集合里，
+    # 于是"拉不到模型清单"变成硬失败、模型不被保存 → 同 provider 内换模型永远不生效。
+    accepted = req.api_mode in ("chat_completions", "anthropic_messages", "codex_responses")
     message = f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
     if accepted:
         message += (f"`{req.requested}` was accepted without verification — if this endpoint does not "
