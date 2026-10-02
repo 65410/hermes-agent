@@ -2085,7 +2085,14 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         history = _branch_source_history(db, session, old_key)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
+        # Row-id truncation lets clients branch without downloading the full transcript
+        # (500-row pages can reach ~15MB; long sessions timed out mid-fetch client-side).
+        if isinstance(upto := params.get("upto_row_id"), int) and upto > 0:
+            idx = next((i for i, m in enumerate(history) if m.get("_row_id") == upto), None)
+            if idx is None:
+                return _err(rid, 4009, "upto_row_id not found in branchable history")
+            history = history[: idx + 1]
+        elif isinstance(count := params.get("count"), int) and count > 0:
             history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:

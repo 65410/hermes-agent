@@ -364,6 +364,7 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    upto_row_id: int | None = None  # keep rows up to and including this message row id
 
 
 class SessionBranchResult(Result):
