@@ -623,8 +623,10 @@ def _adaptive_effort(effort: str, model: str) -> str:
     return adaptive_effort
 
 
-# Per-message effort updates (``mid-conversation-output-config-2026-07-01``): Opus 5+, Fable /
-# Mythos 5.1+ on the Claude API. Snapshot dates (``-20260901``) are not minor versions.
+# Per-message effort updates (``mid-conversation-output-config-2026-07-01``): started with Opus 5 and
+# every Claude 5.1 family; later versions of any family inherit it (Sonnet 5.1, Claude 6.x), so the
+# floor is a version rule, not a family allow-list (anomalyco/opencode#52535 found the allow-list
+# silently dropped the beta on newer models). Snapshot dates (``-20260901``) are not minor versions.
 _CLAUDE_VERSION_RE = re.compile(
     r"(?:^|[./])claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[.-](?P<minor>\d{1,2}))?(?:$|[-:@])"
 )
@@ -635,9 +637,9 @@ def _supports_effort_updates(model: str) -> bool:
     if not match:
         return False
     family, major, minor = match.group("family"), int(match.group("major")), int(match.group("minor") or 0)
-    if family == "opus":
-        return major >= 5
-    return family in ("fable", "mythos") and (major > 5 or (major == 5 and minor >= 1))
+    if family == "opus" and major >= 5:
+        return True
+    return major > 5 or (major == 5 and minor >= 1)
 
 
 def _resolve_effort_markers(

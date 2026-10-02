@@ -75,3 +75,16 @@ def test_record_effort_switch_reads_session_baseline_then_last_marker(tmp_path, 
     assert record_effort_switch(agent, []) is False
     agent.reasoning_config = {"enabled": False}
     assert record_effort_switch(agent, messages + [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]) is False
+
+
+def test_effort_update_floor_is_a_version_rule_not_a_family_allow_list():
+    """Later Claude versions of any family inherit per-turn effort (opencode#52535)."""
+    from agent.anthropic_adapter import _supports_effort_updates
+
+    assert _supports_effort_updates("claude-opus-5-20260901")
+    assert _supports_effort_updates("claude-fable-5.1")
+    assert _supports_effort_updates("claude-sonnet-5-1")
+    assert _supports_effort_updates("claude-haiku-6")
+    assert not _supports_effort_updates("claude-sonnet-5")  # 5.0: not yet
+    assert not _supports_effort_updates("claude-opus-4-8")
+    assert not _supports_effort_updates("claude-fable-5-20260901")  # snapshot date is not a minor
